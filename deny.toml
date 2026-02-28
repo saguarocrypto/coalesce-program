@@ -1,0 +1,59 @@
+# cargo-deny configuration for CoalesceFi Pinocchio
+# https://embarkstudios.github.io/cargo-deny/
+
+# ---------------------------------------------------------------------------
+# Advisories - check for known vulnerabilities and unmaintained crates
+# ---------------------------------------------------------------------------
+[advisories]
+yanked = "warn"
+# Ignore advisories from solana-sdk transitive dependencies that we cannot upgrade
+ignore = [
+    # Vulnerabilities in solana-sdk's transitive deps (pinned by solana-program-test v2.x)
+    "RUSTSEC-2024-0344", # curve25519-dalek timing variability (via ed25519-dalek -> solana-signature)
+    "RUSTSEC-2022-0093", # ed25519-dalek double public key signing oracle (via solana-signature)
+    # Unmaintained crates pulled in by solana-sdk ecosystem
+    "RUSTSEC-2024-0375", # atty (via solana-sdk)
+    "RUSTSEC-2025-0141", # bincode (via solana-sdk)
+    "RUSTSEC-2024-0388", # derivative (via solana-sdk)
+    "RUSTSEC-2025-0119", # number_prefix (via solana-sdk)
+    "RUSTSEC-2024-0436", # paste (via solana-sdk)
+]
+
+# ---------------------------------------------------------------------------
+# Licenses - restrict allowed licenses; deny copyleft
+# ---------------------------------------------------------------------------
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "BUSL-1.1",
+]
+confidence-threshold = 0.8
+
+# ---------------------------------------------------------------------------
+# Bans - control which crates (and versions) are allowed
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+deny = []
+
+skip = []
+
+skip-tree = []
+
+# ---------------------------------------------------------------------------
+# Sources - restrict where crates can be fetched from
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

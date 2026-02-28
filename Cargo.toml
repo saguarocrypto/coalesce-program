@@ -1,0 +1,109 @@
+[package]
+name = "coalesce"
+version = "0.1.0"
+edition = "2021"
+description = "A unsecured and fixed interest rate lending protocol for Solana"
+license = "BUSL-1.1"
+repository = "https://github.com/saguarocrypto/coalesce-program"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+default = []
+no-entrypoint = []
+test-sbf = []
+testable-logic = []  # Exposes internal logic module for fuzzing
+
+[dependencies]
+pinocchio = "0.10.1"
+pinocchio-token = "0.5"
+pinocchio-system = "0.5"
+# curve25519 needed for native PDA derivation; on BPF targets, pinocchio uses syscalls instead
+solana-address = { version = "2.0", features = ["curve25519"] }
+bytemuck = { version = "1.19", features = ["derive", "min_const_generics"] }
+num-derive = "0.4"
+num-traits = { version = "0.2", default-features = false }
+solana-program-log = "1.1.0"
+
+[dev-dependencies]
+solana-program-test = "2.0"
+solana-sdk = "2.0"
+spl-token = "7.0"
+tokio = { version = "1", features = ["full"] }
+proptest = "1.4"
+num-bigint = "0.4"
+
+[profile.release]
+# overflow-checks = true adds a small runtime cost (~2-5% overhead) because the
+# compiler inserts checked arithmetic for every +, -, * operation, panicking on
+# overflow instead of silently wrapping. This tradeoff is well worth it for a
+# financial program where silent integer overflow could lead to incorrect
+# balances, fee calculations, or fund loss. Do not disable this.
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+
+[profile.release.build-override]
+opt-level = 3
+
+# -------------------- Lints --------------------
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(target_os, values("solana"))'] }
+
+[lints.clippy]
+# Enable pedantic lints for stricter code quality.
+# Priority -1 so individual lint settings override.
+pedantic = { level = "warn", priority = -1 }
+
+# ---- Pedantic overrides (too noisy / not a fit) ----
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+doc_markdown = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+module_name_repetitions = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+items_after_statements = "allow"
+uninlined_format_args = "allow"
+return_self_not_must_use = "allow"
+default_trait_access = "allow"
+match_same_arms = "allow"
+unused_async = "allow"
+manual_let_else = "allow"
+used_underscore_binding = "allow"
+ref_option_ref = "allow"
+format_push_string = "allow"
+case_sensitive_file_extension_comparisons = "allow"
+unnecessary_wraps = "allow"
+needless_pass_by_value = "allow"
+trivially_copy_pass_by_ref = "allow"
+no_effect_underscore_binding = "allow"
+redundant_closure_for_method_calls = "allow"
+
+# ---- Cast lints (false positives when values are known-in-range) ----
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_possible_wrap = "allow"
+# Note: cast_lossless is NOT allowed - prefer From::from / TryFrom for clarity.
+
+# ---- Panic safety ----
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+# ---- Policy / hygiene ----
+allow_attributes = "deny"
+result_large_err = "allow"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+# ---- Output hygiene (prefer tracing) ----
+print_stdout = "deny"
+print_stderr = "deny"

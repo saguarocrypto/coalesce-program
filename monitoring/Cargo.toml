@@ -1,0 +1,26 @@
+[package]
+name = "coalescefi-monitor"
+version = "0.1.0"
+edition = "2021"
+description = "Off-chain invariant monitor for the CoalesceFi lending protocol"
+license = "MIT"
+
+[[bin]]
+name = "coalescefi-monitor"
+path = "src/main.rs"
+
+[dependencies]
+solana-client = "2.0"
+solana-sdk = "2.0"
+solana-account-decoder = "2.0"
+bytemuck = { version = "1.19", features = ["derive", "min_const_generics"] }
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+proptest = "1.4"

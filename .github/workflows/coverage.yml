@@ -1,0 +1,362 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run weekly on Sundays at 03:00 UTC
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Coverage thresholds
+  LINE_THRESHOLD: 95
+  BRANCH_THRESHOLD: 85
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Code Coverage
+  # ---------------------------------------------------------------------------
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: coverage-${{ runner.os }}-${{ hashFiles('Cargo.toml') }}
+          restore-keys: coverage-${{ runner.os }}-
+
+      - name: Install cargo-llvm-cov
+        run: |
+          cargo install cargo-llvm-cov --locked || {
+            echo "::warning::cargo-llvm-cov install failed, falling back to cargo-tarpaulin"
+            echo "USE_TARPAULIN=true" >> "$GITHUB_ENV"
+          }
+
+      # -----------------------------------------------------------------------
+      # cargo-llvm-cov path (preferred)
+      # -----------------------------------------------------------------------
+      - name: Generate coverage (cargo-llvm-cov)
+        if: env.USE_TARPAULIN != 'true'
+        run: |
+          # Clean previous coverage data
+          cargo llvm-cov clean --workspace
+
+          # Run tests and generate all report formats
+          cargo llvm-cov test \
+            --features no-entrypoint \
+            --html --output-dir coverage-html \
+            --lcov --output-path coverage.lcov \
+            --json --output-path coverage.json \
+            --branch \
+            --ignore-filename-regex '(tests/|fuzz/|kani_proofs)'
+
+          # Generate summary text for threshold checking
+          cargo llvm-cov report \
+            --features no-entrypoint \
+            --json --output-path coverage-full.json \
+            --branch \
+            --ignore-filename-regex '(tests/|fuzz/|kani_proofs)'
+
+      # -----------------------------------------------------------------------
+      # cargo-tarpaulin fallback
+      # -----------------------------------------------------------------------
+      - name: Install cargo-tarpaulin (fallback)
+        if: env.USE_TARPAULIN == 'true'
+        run: cargo install cargo-tarpaulin --locked
+
+      - name: Generate coverage (cargo-tarpaulin fallback)
+        if: env.USE_TARPAULIN == 'true'
+        run: |
+          cargo tarpaulin \
+            --features no-entrypoint \
+            --out Html Lcov Json \
+            --output-dir coverage-html \
+            --branch \
+            --exclude-files 'tests/*' 'fuzz/*' '**/kani_proofs*' \
+            --engine llvm
+
+          # Tarpaulin outputs to the working directory
+          mv tarpaulin-report.html coverage-html/ 2>/dev/null || true
+          mv lcov.info coverage.lcov 2>/dev/null || true
+          mv tarpaulin-report.json coverage-full.json 2>/dev/null || true
+          cp coverage-full.json coverage.json 2>/dev/null || true
+
+      # -----------------------------------------------------------------------
+      # Extract metrics & enforce thresholds
+      # -----------------------------------------------------------------------
+      - name: Extract coverage metrics
+        id: metrics
+        run: |
+          if [ "$USE_TARPAULIN" = "true" ]; then
+            # Parse tarpaulin JSON
+            TOTAL_LINES=$(python3 -c "
+          import json, sys
+          data = json.load(open('coverage-full.json'))
+          coverable = 0
+          covered = 0
+          for f in data.get('files', []):
+              path = f.get('path', '')
+              if '/logic/' in path or '/processor/' in path:
+                  coverable += f.get('coverable', 0)
+                  covered += f.get('covered', 0)
+          pct = (covered / coverable * 100) if coverable > 0 else 0
+          print(f'{pct:.2f}')
+          sys.exit(0)
+          ")
+            TOTAL_BRANCHES="N/A"
+            echo "line_pct=$TOTAL_LINES" >> "$GITHUB_OUTPUT"
+            echo "branch_pct=0" >> "$GITHUB_OUTPUT"
+            echo "branch_display=N/A (tarpaulin fallback)" >> "$GITHUB_OUTPUT"
+          else
+            # Parse llvm-cov JSON export
+            python3 - <<'PYEOF'
+          import json, os, sys
+
+          with open("coverage-full.json") as f:
+              data = json.load(f)
+
+          # llvm-cov JSON format: data[] -> files[] with summary
+          target_lines_covered = 0
+          target_lines_total = 0
+          target_branches_covered = 0
+          target_branches_total = 0
+
+          files = data.get("data", [{}])[0].get("files", [])
+          for fentry in files:
+              fname = fentry.get("filename", "")
+              if "/logic/" not in fname and "/processor/" not in fname:
+                  continue
+              summary = fentry.get("summary", {})
+
+              lines = summary.get("lines", {})
+              target_lines_covered += lines.get("covered", 0)
+              target_lines_total += lines.get("count", 0)
+
+              branches = summary.get("branches", {})
+              target_branches_covered += branches.get("covered", 0)
+              target_branches_total += branches.get("count", 0)
+
+          line_pct = (target_lines_covered / target_lines_total * 100) if target_lines_total > 0 else 0
+          branch_pct = (target_branches_covered / target_branches_total * 100) if target_branches_total > 0 else 0
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"line_pct={line_pct:.2f}\n")
+              out.write(f"branch_pct={branch_pct:.2f}\n")
+              out.write(f"branch_display={branch_pct:.2f}\n")
+              out.write(f"lines_covered={target_lines_covered}\n")
+              out.write(f"lines_total={target_lines_total}\n")
+              out.write(f"branches_covered={target_branches_covered}\n")
+              out.write(f"branches_total={target_branches_total}\n")
+          PYEOF
+          fi
+
+      - name: Enforce coverage thresholds
+        env:
+          LINE_PCT: ${{ steps.metrics.outputs.line_pct }}
+          BRANCH_PCT: ${{ steps.metrics.outputs.branch_pct }}
+          BRANCH_DISPLAY: ${{ steps.metrics.outputs.branch_display }}
+        run: |
+          echo "Line coverage:   ${LINE_PCT}% (threshold: ${LINE_THRESHOLD}%)"
+          echo "Branch coverage: ${BRANCH_PCT}% (threshold: ${BRANCH_THRESHOLD}%)"
+
+          FAILED=0
+
+          if [ "$(echo "$LINE_PCT < $LINE_THRESHOLD" | bc -l)" -eq 1 ]; then
+            echo "::error::Line coverage ${LINE_PCT}% is below the ${LINE_THRESHOLD}% threshold"
+            FAILED=1
+          fi
+
+          if [ "$BRANCH_DISPLAY" != "N/A (tarpaulin fallback)" ]; then
+            if [ "$(echo "$BRANCH_PCT < $BRANCH_THRESHOLD" | bc -l)" -eq 1 ]; then
+              echo "::error::Branch coverage ${BRANCH_PCT}% is below the ${BRANCH_THRESHOLD}% threshold"
+              FAILED=1
+            fi
+          else
+            echo "::warning::Branch coverage not available with tarpaulin fallback; skipping branch threshold check"
+          fi
+
+          if [ "$FAILED" -eq 1 ]; then
+            exit 1
+          fi
+
+          echo "All coverage thresholds met."
+
+      # -----------------------------------------------------------------------
+      # Badge JSON
+      # -----------------------------------------------------------------------
+      - name: Generate badge JSON
+        if: always()
+        env:
+          LINE_PCT: ${{ steps.metrics.outputs.line_pct }}
+          BRANCH_PCT: ${{ steps.metrics.outputs.branch_pct }}
+        run: |
+
+          # Determine badge color based on line coverage
+          if [ "$(echo "$LINE_PCT >= 95" | bc -l)" -eq 1 ]; then
+            COLOR="brightgreen"
+          elif [ "$(echo "$LINE_PCT >= 85" | bc -l)" -eq 1 ]; then
+            COLOR="green"
+          elif [ "$(echo "$LINE_PCT >= 70" | bc -l)" -eq 1 ]; then
+            COLOR="yellow"
+          else
+            COLOR="red"
+          fi
+
+          mkdir -p coverage-badge
+
+          # Line coverage badge (shields.io endpoint format)
+          cat > coverage-badge/line-coverage.json <<BADGE_EOF
+          {
+            "schemaVersion": 1,
+            "label": "line coverage",
+            "message": "${LINE_PCT}%",
+            "color": "${COLOR}"
+          }
+          BADGE_EOF
+
+          # Branch coverage badge
+          if [ "$(echo "$BRANCH_PCT > 0" | bc -l 2>/dev/null)" = "1" ]; then
+            if [ "$(echo "$BRANCH_PCT >= 85" | bc -l)" -eq 1 ]; then
+              BCOLOR="brightgreen"
+            elif [ "$(echo "$BRANCH_PCT >= 70" | bc -l)" -eq 1 ]; then
+              BCOLOR="green"
+            else
+              BCOLOR="red"
+            fi
+            cat > coverage-badge/branch-coverage.json <<BBADGE_EOF
+          {
+            "schemaVersion": 1,
+            "label": "branch coverage",
+            "message": "${BRANCH_PCT}%",
+            "color": "${BCOLOR}"
+          }
+          BBADGE_EOF
+          fi
+
+      # -----------------------------------------------------------------------
+      # PR comment
+      # -----------------------------------------------------------------------
+      - name: Post coverage summary on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          LINE_PCT: ${{ steps.metrics.outputs.line_pct }}
+          BRANCH_DISPLAY: ${{ steps.metrics.outputs.branch_display }}
+          BRANCH_PCT: ${{ steps.metrics.outputs.branch_pct }}
+          LINES_COVERED: ${{ steps.metrics.outputs.lines_covered }}
+          LINES_TOTAL: ${{ steps.metrics.outputs.lines_total }}
+          BRANCHES_COVERED: ${{ steps.metrics.outputs.branches_covered }}
+          BRANCHES_TOTAL: ${{ steps.metrics.outputs.branches_total }}
+          LINE_THRESHOLD_VAL: ${{ env.LINE_THRESHOLD }}
+          BRANCH_THRESHOLD_VAL: ${{ env.BRANCH_THRESHOLD }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const linePct = process.env.LINE_PCT;
+            const branchDisplay = process.env.BRANCH_DISPLAY || process.env.BRANCH_PCT;
+            const linesCovered = process.env.LINES_COVERED || 'N/A';
+            const linesTotal = process.env.LINES_TOTAL || 'N/A';
+            const branchesCovered = process.env.BRANCHES_COVERED || 'N/A';
+            const branchesTotal = process.env.BRANCHES_TOTAL || 'N/A';
+            const lineThreshold = process.env.LINE_THRESHOLD_VAL;
+            const branchThreshold = process.env.BRANCH_THRESHOLD_VAL;
+
+            const linePass = parseFloat(linePct) >= parseFloat(lineThreshold);
+            const branchPass = branchDisplay === 'N/A (tarpaulin fallback)' ||
+              parseFloat(branchDisplay) >= parseFloat(branchThreshold);
+
+            const lineIcon = linePass ? ':white_check_mark:' : ':x:';
+            const branchIcon = branchPass ? ':white_check_mark:' : ':x:';
+
+            const body = `## Coverage Report
+
+            | Metric | Value | Threshold | Status |
+            |--------|-------|-----------|--------|
+            | **Line Coverage** | ${linePct}% (${linesCovered}/${linesTotal}) | ${lineThreshold}% | ${lineIcon} |
+            | **Branch Coverage** | ${branchDisplay}% (${branchesCovered}/${branchesTotal}) | ${branchThreshold}% | ${branchIcon} |
+
+            > Scope: \`src/logic/\` and \`src/processor/\` directories only.
+            > Tool: cargo-llvm-cov with branch instrumentation.
+
+            <details>
+            <summary>Download full reports</summary>
+
+            HTML and LCOV reports are available as workflow artifacts.
+            </details>
+            `.replace(/^            /gm, '');
+
+            // Find and update existing comment or create new one
+            const marker = '## Coverage Report';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(c =>
+              c.user.login === 'github-actions[bot]' && c.body.startsWith(marker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      # -----------------------------------------------------------------------
+      # Artifacts
+      # -----------------------------------------------------------------------
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html-${{ github.run_id }}
+          path: coverage-html/
+          retention-days: 30
+
+      - name: Upload LCOV report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov-${{ github.run_id }}
+          path: coverage.lcov
+          retention-days: 30
+
+      - name: Upload badge JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-badge-${{ github.run_id }}
+          path: coverage-badge/
+          retention-days: 90

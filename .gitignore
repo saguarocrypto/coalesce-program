@@ -1,0 +1,32 @@
+# Rust
+/target/
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Fuzz artifacts
+fuzz/artifacts/
+fuzz/corpus/
+
+# Coverage
+.coverage-loop/
+.coverage-baseline/
+coverage-html/
+coverage.lcov
+coverage.json
+coverage-full.json
+coverage-badge/
+fuzz-output.log
+
+# Test output
+result_output_dir/
+*.proptest-regressions

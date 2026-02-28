@@ -1,0 +1,85 @@
+[package]
+name = "coalesce-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+coalesce = { path = "..", features = ["no-entrypoint", "testable-logic"] }
+bytemuck = { version = "1.19", features = ["derive"] }
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+# --- Fuzz targets ---
+
+[[bin]]
+name = "fuzz_interest_accrual"
+path = "fuzz_targets/fuzz_interest_accrual.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_settlement_factor"
+path = "fuzz_targets/fuzz_settlement_factor.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_deposit_withdraw_roundtrip"
+path = "fuzz_targets/fuzz_deposit_withdraw_roundtrip.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_instruction_parsing"
+path = "fuzz_targets/fuzz_instruction_parsing.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_account_deserialization"
+path = "fuzz_targets/fuzz_account_deserialization.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_fee_calculations"
+path = "fuzz_targets/fuzz_fee_calculations.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_differential_interest"
+path = "fuzz_targets/fuzz_differential_interest.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_vault_solvency"
+path = "fuzz_targets/fuzz_vault_solvency.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_scaled_balance_invariants"
+path = "fuzz_targets/fuzz_scaled_balance_invariants.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_borrow_repay_cycle"
+path = "fuzz_targets/fuzz_borrow_repay_cycle.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_state_transitions"
+path = "fuzz_targets/fuzz_state_transitions.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_market_state_consistency"
+path = "fuzz_targets/fuzz_market_state_consistency.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_protocol_sequence"
+path = "fuzz_targets/fuzz_protocol_sequence.rs"
+doc = false

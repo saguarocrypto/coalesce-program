@@ -1,0 +1,10 @@
+# cargo-audit configuration for CoalesceFi
+# Ignore advisories from solana-sdk transitive dependencies that we cannot upgrade
+
+[advisories]
+ignore = [
+    # curve25519-dalek timing variability (via ed25519-dalek -> solana-signature -> solana-sdk)
+    "RUSTSEC-2024-0344",
+    # ed25519-dalek double public key signing oracle (via solana-signature -> solana-sdk)
+    "RUSTSEC-2022-0093",
+]

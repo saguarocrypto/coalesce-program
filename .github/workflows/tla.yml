@@ -1,0 +1,127 @@
+name: TLA+ Model Checking
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/logic/**"
+      - "src/processor/**"
+      - "src/state/**"
+      - "specs/**"
+  schedule:
+    # Run weekly on Sundays at 08:00 UTC
+    - cron: "0 8 * * 0"
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # TLC Model Checker
+  # ---------------------------------------------------------------------------
+  tlc:
+    name: TLC Model Checker
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: specs
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Download tla2tools.jar
+        run: |
+          curl -fsSL -o tla2tools.jar \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+
+      - name: Run TLC model checker
+        id: tlc
+        run: |
+          set +e
+          java -jar tla2tools.jar \
+            -config MC.cfg \
+            -workers auto \
+            -deadlock \
+            CoalesceFi.tla 2>&1 | tee tlc-output.txt
+          TLC_EXIT=$?
+          set -e
+
+          # Extract key metrics from output
+          STATES_FOUND=$(grep -oP 'found\s+\K[0-9,]+(?=\s+distinct)' tlc-output.txt || echo "N/A")
+          STATES_QUEUED=$(grep -oP '[0-9,]+(?=\s+states generated)' tlc-output.txt || echo "N/A")
+          ERRORS=$(grep -c 'Error:' tlc-output.txt || echo "0")
+
+          echo "exit_code=$TLC_EXIT" >> "$GITHUB_OUTPUT"
+          echo "states_found=$STATES_FOUND" >> "$GITHUB_OUTPUT"
+          echo "states_queued=$STATES_QUEUED" >> "$GITHUB_OUTPUT"
+          echo "errors=$ERRORS" >> "$GITHUB_OUTPUT"
+
+          exit $TLC_EXIT
+
+      - name: Upload TLC output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlc-output-${{ github.run_id }}
+          path: specs/tlc-output.txt
+          retention-days: 30
+
+      - name: Job summary
+        if: always()
+        env:
+          EXIT_CODE: ${{ steps.tlc.outputs.exit_code }}
+          STATES: ${{ steps.tlc.outputs.states_found }}
+          GENERATED: ${{ steps.tlc.outputs.states_queued }}
+          ERRORS: ${{ steps.tlc.outputs.errors }}
+        run: |
+
+          if [ "$EXIT_CODE" = "0" ]; then
+            STATUS="PASSED"
+          else
+            STATUS="FAILED (exit code $EXIT_CODE)"
+          fi
+
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## TLA+ Model Checking Results
+
+          | Property | Value |
+          |----------|-------|
+          | **Status** | $STATUS |
+          | **Spec** | \`CoalesceFi.tla\` |
+          | **Config** | \`MC.cfg\` |
+          | **Distinct states** | $STATES |
+          | **States generated** | $GENERATED |
+          | **Errors** | $ERRORS |
+
+          ### Invariants Checked
+          - VaultSolvency
+          - ScaleFactorMonotonic
+          - SettlementFactorBounded
+          - SettlementFactorMonotonic
+          - FeesNeverNegative
+          - CapRespected
+          - WhitelistCapacity
+          - PayoutBounded
+          - TotalPayoutBounded
+          - TypeInvariant
+
+          ### Model Parameters
+          | Constant | Value |
+          |----------|-------|
+          | WAD | 1000 |
+          | BPS | 100 |
+          | SECONDS_PER_YEAR | 100 |
+          | Lenders | {L1, L2} |
+          | MaxAmount | 5 |
+          | MaturityTimestamp | 6 |
+          | MaxTotalSupply | 50 |
+          | WhitelistMaxCapacity | 50 |
+          | AnnualInterestBps | 10 |
+          | FeeRateBps | 5 |
+          EOF

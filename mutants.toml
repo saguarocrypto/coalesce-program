@@ -1,0 +1,48 @@
+# cargo-mutants configuration for CoalesceFi lending protocol.
+# See: https://mutants.rs/config.html
+#
+# Run: cargo mutants --package coalesce
+#
+# Target: achieve >90% mutation kill rate on core logic and processors.
+# The test suite includes unit tests, property tests, and integration tests.
+
+# Only mutate production source code, not tests or fuzz targets.
+examine_globs = [
+    "src/logic/interest.rs",
+    "src/logic/validation.rs",
+    "src/processor/*.rs",
+    "src/error.rs",
+    "src/constants.rs",
+    "src/state/*.rs",
+]
+
+# Exclude test modules embedded in source files, Kani proofs (require Kani
+# toolchain, not standard cargo test), and the lib.rs entrypoint (thin
+# dispatch, tested via integration tests).
+exclude_globs = [
+    "src/**/tests.rs",
+    "src/**/kani_proofs.rs",
+    "src/lib.rs",
+]
+
+# Skip functions that are trivial getters/setters (bytemuck field accessors).
+# These are covered by roundtrip tests and not worth the mutation testing overhead.
+# Also skip Display/Debug impls and the From<LendingError> conversion (trivial wrapper).
+exclude_re = [
+    "^(set_|get_)",
+    "^(annual_interest_bps|maturity_timestamp|max_total_supply|market_nonce|scaled_total_supply|scale_factor|accrued_protocol_fees|total_deposited|total_borrowed|total_repaid|last_accrual_timestamp|settlement_factor_wad|fee_rate_bps|scaled_balance|max_borrow_capacity|total_borrowed)$",
+    "^fmt$",
+    "^from$",
+]
+
+# Timeout per mutant (seconds). Generous to avoid false survivors on slower CI
+# machines. Interest accrual and state transition tests involve substantial setup.
+timeout = 180
+
+# Number of parallel jobs. Set to 0 for auto-detection based on CPU cores.
+# On CI, explicitly setting this avoids resource contention.
+# jobs = 0
+
+# Minimum test timeout (seconds). Ensures even fast tests get a chance to run
+# before being killed.
+minimum_test_timeout = 30
