@@ -8,6 +8,7 @@ use crate::constants::{
 };
 use crate::error::LendingError;
 use crate::state::{LenderPosition, Market, ProtocolConfig};
+use pinocchio_system;
 
 /// CloseLenderPosition (disc 10)
 /// Close an empty lender position account and return rent to the lender.
@@ -129,10 +130,9 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
         *byte = 0;
     }
 
-    // Step 3: Transfer lamports from position to lender and close the account.
-    // We transfer all lamports to the lender and zero out the data, which
-    // effectively closes the account. The runtime will garbage-collect any
-    // account with 0 lamports on the next slot boundary.
+    // Step 3: Transfer all lamports from position to lender.
+    // The runtime reclaims zero-lamport accounts at end-of-transaction.
+    // Step 4 below reassigns ownership to make closure explicit.
     let position_lamports = lender_position_account.lamports();
     lender_position_account.set_lamports(0);
     let new_lender_lamports = lender
@@ -140,6 +140,15 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
         .checked_add(position_lamports)
         .ok_or(LendingError::MathOverflow)?;
     lender.set_lamports(new_lender_lamports);
+
+    // Step 4: Reassign ownership to the system program so the account is
+    // fully closed within this instruction rather than waiting for
+    // end-of-transaction cleanup of the zero-lamport account.
+    // SAFETY: No active reference to the owner exists; the read-only borrows above are
+    // scoped and dropped. The program owns this account so the runtime permits reassignment.
+    unsafe {
+        lender_position_account.assign(&pinocchio_system::ID);
+    }
 
     log!(
         "evt:close_position market={} lender={}",

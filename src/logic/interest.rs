@@ -82,8 +82,12 @@ pub fn accrue_interest(
     let annual_bps = u128::from(market.annual_interest_bps());
     let scale_factor = market.scale_factor();
 
-    let days_elapsed = time_elapsed / SECONDS_PER_DAY;
-    let remaining_seconds = time_elapsed % SECONDS_PER_DAY;
+    let days_elapsed = time_elapsed
+        .checked_div(SECONDS_PER_DAY)
+        .ok_or(LendingError::MathOverflow)?;
+    let remaining_seconds = time_elapsed
+        .checked_rem(SECONDS_PER_DAY)
+        .ok_or(LendingError::MathOverflow)?;
 
     let days_elapsed_u32 = u32::try_from(days_elapsed).map_err(|_| LendingError::MathOverflow)?;
     let remaining_seconds_u128 =
