@@ -118,6 +118,21 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     let current_ts = get_unix_timestamp()?;
     accrue_interest(market, config, current_ts)?;
 
+    // Finding 9: Cap repayment at per-market principal outstanding.
+    // principal_repaid = total_repaid - total_interest_repaid (interest goes to a separate bucket)
+    // market_outstanding = total_borrowed - principal_repaid
+    let principal_repaid = market
+        .total_repaid()
+        .checked_sub(market.total_interest_repaid())
+        .ok_or(LendingError::MathOverflow)?;
+    let market_outstanding = market
+        .total_borrowed()
+        .checked_sub(principal_repaid)
+        .ok_or(LendingError::MathOverflow)?;
+    if amount > market_outstanding {
+        return Err(LendingError::RepaymentExceedsDebt.into());
+    }
+
     // SR-123: Verify vault account is owned by token program before transfer
     if unsafe { vault_account.owner() } != &pinocchio_token::ID {
         return Err(LendingError::InvalidAccountOwner.into());
