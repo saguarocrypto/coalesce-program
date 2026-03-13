@@ -112,14 +112,18 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(LendingError::InvalidPDA.into());
     }
 
-    // Defense-in-depth: reject if account already has data
+    // Defense-in-depth: reject if account already has data (fail closed).
+    // Finding 5: Previously used `if let Ok(...)` which silently skipped
+    // malformed accounts. Now check discriminator bytes directly.
     if protocol_config_account.data_len() > 0 {
-        // SAFETY: Read-only borrow. Account data length is verified by bytemuck::try_from_bytes.
         let data = unsafe { protocol_config_account.borrow_unchecked() };
-        if let Ok(config) = bytemuck::try_from_bytes::<ProtocolConfig>(data) {
-            if config.is_initialized == 1 {
-                return Err(LendingError::AlreadyInitialized.into());
-            }
+        if data.len() >= 8 && data[..8] == DISC_PROTOCOL_CONFIG {
+            return Err(LendingError::AlreadyInitialized.into());
+        }
+        // Fail closed: if account has data but doesn't match our discriminator,
+        // it may be corrupted or a different account type — still reject.
+        if protocol_config_account.owned_by(program_id) {
+            return Err(ProgramError::InvalidAccountData);
         }
     }
 

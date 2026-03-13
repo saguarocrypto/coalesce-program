@@ -75,18 +75,21 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(LendingError::InvalidPDA.into());
     }
 
-    // Check if account already exists (has lamports)
-    let account_exists = borrower_whitelist_account.lamports() > 0;
+    // Use ownership check instead of lamports to determine if account exists.
+    // Lamports can be donated to any PDA, so lamports > 0 is not proof of initialization.
+    let account_exists = borrower_whitelist_account.owned_by(program_id);
 
     if !account_exists && is_whitelisted == 1 {
-        // Defense-in-depth: reject if whitelist account already has data
+        // Defense-in-depth: reject if whitelist account already has data (fail closed).
+        // Finding 5: Previously used `if let Ok(...)` which silently skipped
+        // malformed accounts. Now check discriminator bytes directly.
         if borrower_whitelist_account.data_len() > 0 {
-            // SAFETY: Read-only borrow. Account data length is verified by bytemuck::try_from_bytes.
             let existing_data = unsafe { borrower_whitelist_account.borrow_unchecked() };
-            if let Ok(existing_wl) = bytemuck::try_from_bytes::<BorrowerWhitelist>(existing_data) {
-                if existing_wl.discriminator == DISC_BORROWER_WL {
-                    return Err(LendingError::AlreadyInitialized.into());
-                }
+            if existing_data.len() >= 8 && existing_data[..8] == DISC_BORROWER_WL {
+                return Err(LendingError::AlreadyInitialized.into());
+            }
+            if borrower_whitelist_account.owned_by(program_id) {
+                return Err(ProgramError::InvalidAccountData);
             }
         }
 
@@ -136,7 +139,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
             return Err(ProgramError::InvalidAccountData);
         }
 
-        // SR-117: Prevent blacklisting borrowers with outstanding debt
+        // SR-137: Prevent de-whitelisting borrowers with outstanding debt
         // Removing a borrower from the whitelist while they have active debt
         // could prevent proper debt collection and accounting
         if is_whitelisted == 0 && wl.current_borrowed() > 0 {
@@ -146,6 +149,10 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         wl.is_whitelisted = is_whitelisted;
         wl.set_max_borrow_capacity(max_borrow_capacity);
         // current_borrowed is NOT modified
+    } else {
+        // !account_exists && is_whitelisted == 0: de-whitelisting a borrower
+        // whose whitelist PDA was never created is an error.
+        return Err(LendingError::NotWhitelisted.into());
     }
 
     log!(

@@ -175,14 +175,16 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(LendingError::InvalidPDA.into());
     }
 
-    // Defense-in-depth: reject if market account already has data
+    // Defense-in-depth: reject if market account already has data (fail closed).
+    // Finding 5: Previously used `if let Ok(...)` which silently skipped
+    // malformed accounts. Now check discriminator bytes directly.
     if market_account.data_len() > 0 {
-        // SAFETY: Read-only borrow. Account data length is verified by bytemuck::try_from_bytes.
         let existing_data = unsafe { market_account.borrow_unchecked() };
-        if let Ok(existing_market) = bytemuck::try_from_bytes::<Market>(existing_data) {
-            if existing_market.discriminator == DISC_MARKET {
-                return Err(LendingError::MarketAlreadyExists.into());
-            }
+        if existing_data.len() >= 8 && existing_data[..8] == DISC_MARKET {
+            return Err(LendingError::MarketAlreadyExists.into());
+        }
+        if market_account.owned_by(program_id) {
+            return Err(ProgramError::InvalidAccountData);
         }
     }
 

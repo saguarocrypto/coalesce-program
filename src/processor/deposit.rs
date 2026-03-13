@@ -90,7 +90,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(ProgramError::InvalidAccountData);
     }
 
-    // SR-121: Verify market PDA derivation
+    // Verify market PDA derivation
     validate_market_pda(market_account, market, program_id)?;
 
     // SR-035: vault must match
@@ -118,7 +118,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     // Step 2: Compute scaled amount = amount * WAD / scale_factor
     let amount_u128 = u128::from(amount);
     let scale_factor = market.scale_factor();
-    // SR-122: Explicit check for zero scale_factor (defense-in-depth)
+    // Defense-in-depth: reject zero scale_factor before division
     if scale_factor == 0 {
         return Err(LendingError::InvalidScaleFactor.into());
     }
@@ -128,12 +128,12 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         .checked_div(scale_factor)
         .ok_or(LendingError::MathOverflow)?;
 
-    // Step 4: Revert if scaled_amount == 0
+    // Step 3: Revert if scaled_amount == 0
     if scaled_amount == 0 {
         return Err(LendingError::ZeroScaledAmount.into());
     }
 
-    // Step 3: Validate cap
+    // Step 4: Validate cap
     let new_scaled_total = market
         .scaled_total_supply()
         .checked_add(scaled_amount)
@@ -179,9 +179,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(LendingError::InvalidPDA.into());
     }
 
-    let position_exists = lender_position_account.lamports() > 0;
+    // Use ownership check instead of lamports to determine if position exists.
+    // Lamports can be donated to any PDA, so lamports > 0 is not proof of initialization.
+    let position_exists = lender_position_account.owned_by(program_id);
     if position_exists {
-        // Verify ownership before deserializing existing position
+        // Defense-in-depth: verify ownership (invariant from branch condition)
         if !lender_position_account.owned_by(program_id) {
             return Err(LendingError::InvalidAccountOwner.into());
         }
