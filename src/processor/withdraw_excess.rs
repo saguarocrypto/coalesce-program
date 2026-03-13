@@ -7,7 +7,7 @@ use crate::constants::{
 };
 use crate::error::LendingError;
 use crate::logic::validation::{
-    get_unix_timestamp, validate_market_authority, validate_market_pda,
+    check_blacklist, get_unix_timestamp, validate_market_authority, validate_market_pda,
 };
 use crate::state::{Market, ProtocolConfig};
 
@@ -20,7 +20,7 @@ use crate::state::{Market, ProtocolConfig};
 ///
 /// This prevents loss of funds when borrower overpays interest.
 pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> ProgramResult {
-    if accounts.len() < 7 {
+    if accounts.len() < 8 {
         return Err(ProgramError::NotEnoughAccountKeys);
     }
     let market_account = &accounts[0];
@@ -30,6 +30,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
     let market_authority = &accounts[4];
     let token_program = &accounts[5];
     let protocol_config_account = &accounts[6];
+    let blacklist_check = &accounts[7];
 
     // Validate token program
     if token_program.address() != &pinocchio_token::ID {
@@ -89,6 +90,9 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
     if market.borrower != *borrower.address().as_ref() {
         return Err(LendingError::Unauthorized.into());
     }
+
+    // Blacklist check for borrower (Finding 8: was missing from withdraw_excess)
+    check_blacklist(blacklist_check, config, borrower.address())?;
 
     // Verify vault matches
     if market.vault != *vault_account.address().as_ref() {

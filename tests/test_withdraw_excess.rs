@@ -1668,6 +1668,7 @@ async fn test_withdraw_excess_wrong_borrower() {
     let snapshot_before_fail =
         common::ProtocolSnapshot::capture(&mut ctx, &market, &vault, &[position_pda]).await;
     let (protocol_config, _) = common::get_protocol_config_pda();
+    let (blacklist_check, _) = common::get_blacklist_pda(&blacklist_program.pubkey(), &wrong_borrower.pubkey());
     let ix = Instruction {
         program_id: common::program_id(),
         accounts: vec![
@@ -1678,6 +1679,7 @@ async fn test_withdraw_excess_wrong_borrower() {
             AccountMeta::new_readonly(market_authority, false),
             AccountMeta::new_readonly(spl_token::id(), false),
             AccountMeta::new_readonly(protocol_config, false),
+            AccountMeta::new_readonly(blacklist_check, false),
         ],
         data: vec![11u8], // WithdrawExcess discriminator
     };
