@@ -194,7 +194,7 @@ fn compute_fee(
     interest_delta_wad: u128,
     fee_rate_bps: u16,
     scaled_total_supply: u128,
-    new_scale_factor: u128,
+    scale_factor_before: u128,
     existing_fees: u64,
 ) -> Result<u64, &'static str> {
     let fee_rate = u128::from(fee_rate_bps);
@@ -208,8 +208,9 @@ fn compute_fee(
         .checked_div(BPS)
         .ok_or("div-by-zero: BPS")?;
 
+    // Use pre-accrual scale_factor_before (Finding 10 fix)
     let fee_normalized = scaled_total_supply
-        .checked_mul(new_scale_factor)
+        .checked_mul(scale_factor_before)
         .ok_or("overflow: supply * scale_factor")?
         .checked_div(WAD)
         .ok_or("div-by-zero: WAD (1)")?
@@ -270,9 +271,10 @@ fn oracle_accrue_step(
             .checked_div(BPS)
             .ok_or(LendingError::MathOverflow)?;
 
+        // Use pre-accrual scale_factor (Finding 10 fix)
         let fee_normalized = state
             .scaled_total_supply
-            .checked_mul(new_scale_factor)
+            .checked_mul(state.scale_factor)
             .ok_or(LendingError::MathOverflow)?
             .checked_div(WAD)
             .ok_or(LendingError::MathOverflow)?
@@ -623,7 +625,8 @@ fn concolic_accrue_path6_fee_fits_u64() {
     let interest_delta_wad = growth - WAD;
     let new_sf = mul_wad_oracle(WAD, growth).unwrap();
     let fee_delta_wad = interest_delta_wad * 500 / BPS; // 5% of interest
-    let fee_normalized = supply * new_sf / WAD * fee_delta_wad / WAD;
+    // Use pre-accrual scale factor (WAD) for fee computation (Finding 10)
+    let fee_normalized = supply * WAD / WAD * fee_delta_wad / WAD;
 
     assert!(
         fee_normalized <= u128::from(u64::MAX),

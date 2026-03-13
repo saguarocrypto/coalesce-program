@@ -277,15 +277,15 @@ fn fee_delta_after_elapsed(
     }
 
     let growth = math_oracle::growth_factor_wad(annual_bps, elapsed_seconds);
-    let new_sf = math_oracle::mul_wad(scale_factor_before, growth);
     let interest_delta_wad = growth.checked_sub(WAD).unwrap();
     let fee_delta_wad = interest_delta_wad
         .checked_mul(u128::from(fee_rate_bps))
         .unwrap()
         .checked_div(BPS)
         .unwrap();
+    // Use pre-accrual scale_factor_before (matches on-chain Finding 10 fix)
     let fee_normalized = scaled_supply
-        .checked_mul(new_sf)
+        .checked_mul(scale_factor_before)
         .unwrap()
         .checked_div(WAD)
         .unwrap()

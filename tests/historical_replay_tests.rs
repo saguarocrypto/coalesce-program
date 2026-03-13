@@ -675,14 +675,14 @@ fn accrue_scale_factor_exact(scale_factor: u128, annual_bps: u16, elapsed_second
 
 fn accrue_fee_delta_exact(
     scaled_total_supply: u128,
-    new_scale_factor: u128,
+    scale_factor_before: u128,
     annual_bps: u16,
     fee_rate_bps: u16,
     elapsed_seconds: i64,
 ) -> u64 {
     interest_oracle::fee_delta_exact(
         scaled_total_supply,
-        new_scale_factor,
+        scale_factor_before,
         annual_bps,
         fee_rate_bps,
         elapsed_seconds,
@@ -758,12 +758,13 @@ fn accrue_expected_state(
         return;
     }
 
+    let sf_before = *scale_factor;
     *scale_factor = accrue_scale_factor_exact(*scale_factor, annual_bps, elapsed);
     if with_fee_config {
         *accrued_protocol_fees = accrued_protocol_fees
             .checked_add(accrue_fee_delta_exact(
                 scaled_total_supply,
-                *scale_factor,
+                sf_before,
                 annual_bps,
                 fee_rate_bps,
                 elapsed,
@@ -881,11 +882,12 @@ fn historical_scenario_a_initial_deposits_5_lenders() {
     for i in 0..deposit_amounts.len() {
         let elapsed = deposit_times[i] - expected_last;
         if elapsed > 0 {
+            let sf_before = expected_sf;
             expected_sf = accrue_scale_factor_exact(expected_sf, annual_bps, elapsed);
             expected_fees = expected_fees
                 .checked_add(accrue_fee_delta_exact(
                     expected_sts,
-                    expected_sf,
+                    sf_before,
                     annual_bps,
                     fee_rate_bps,
                     elapsed,

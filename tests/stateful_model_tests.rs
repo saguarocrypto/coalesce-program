@@ -202,9 +202,10 @@ impl ModelState {
                 None => return false,
             };
 
+            // Use pre-accrual scale_factor (matches on-chain Finding 10 fix)
             let fee_normalized = match self
                 .scaled_total_supply
-                .checked_mul(new_sf)
+                .checked_mul(self.scale_factor)
                 .and_then(|v| v.checked_div(WAD))
                 .and_then(|v| v.checked_mul(fee_delta_wad))
                 .and_then(|v| v.checked_div(WAD))

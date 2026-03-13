@@ -189,7 +189,7 @@ fn oracle_scale_factor_after_step(
 
 fn oracle_fee_delta_normalized(
     scaled_total_supply: u128,
-    new_scale_factor: u128,
+    scale_factor_before: u128,
     annual_interest_bps: u16,
     last_accrual_timestamp: i64,
     maturity_timestamp: i64,
@@ -209,7 +209,8 @@ fn oracle_fee_delta_normalized(
         return 0;
     }
     let fee_delta_wad = interest_delta_wad * u128::from(fee_rate_bps) / BPS;
-    let fee_normalized = scaled_total_supply * new_scale_factor / WAD * fee_delta_wad / WAD;
+    // Use pre-accrual scale_factor_before (matches on-chain logic after Finding 10 fix)
+    let fee_normalized = scaled_total_supply * scale_factor_before / WAD * fee_delta_wad / WAD;
     u64::try_from(fee_normalized).unwrap()
 }
 
@@ -577,7 +578,7 @@ fn chaos_reorder_multiple_accruals_same_timestamp_idempotent() {
     let expected_sf = oracle_scale_factor_after_step(WAD, annual_bps, start, i64::MAX, target);
     let expected_fee = oracle_fee_delta_normalized(
         supply,
-        expected_sf,
+        WAD, // pre-accrual scale factor (Finding 10)
         annual_bps,
         start,
         i64::MAX,
@@ -606,7 +607,7 @@ fn chaos_reorder_multiple_accruals_same_timestamp_idempotent() {
         oracle_scale_factor_after_step(expected_sf, annual_bps, target, i64::MAX, next);
     let expected_fee_next = oracle_fee_delta_normalized(
         supply,
-        expected_sf_next,
+        expected_sf, // pre-accrual scale factor for this step (Finding 10)
         annual_bps,
         target,
         i64::MAX,
@@ -779,7 +780,7 @@ fn chaos_duplicate_accrual_idempotent() {
     let expected_sf = oracle_scale_factor_after_step(WAD, annual_bps, start, i64::MAX, ts);
     let expected_fee = oracle_fee_delta_normalized(
         supply,
-        expected_sf,
+        WAD, // pre-accrual scale factor (Finding 10)
         annual_bps,
         start,
         i64::MAX,
@@ -807,7 +808,7 @@ fn chaos_duplicate_accrual_idempotent() {
         oracle_scale_factor_after_step(expected_sf, annual_bps, ts, i64::MAX, next);
     let expected_fee_next = oracle_fee_delta_normalized(
         supply,
-        expected_sf_next,
+        expected_sf, // pre-accrual scale factor for this step (Finding 10)
         annual_bps,
         ts,
         i64::MAX,
@@ -1207,7 +1208,7 @@ fn chaos_concurrent_collect_fees_and_borrow() {
     let expected_sf = oracle_scale_factor_after_step(WAD, annual_bps, 0, maturity, accrual_ts);
     let expected_fee_delta = oracle_fee_delta_normalized(
         market.scaled_total_supply(),
-        expected_sf,
+        WAD, // pre-accrual scale factor (Finding 10)
         annual_bps,
         0,
         maturity,
@@ -1703,7 +1704,7 @@ fn chaos_recovery_rapid_fire_100_ops_no_drift() {
         );
         let expected_fee_delta = oracle_fee_delta_normalized(
             pre_snap.scaled_total_supply,
-            expected_sf_after_accrual,
+            pre_snap.scale_factor, // pre-accrual scale factor (Finding 10)
             annual_bps,
             pre_snap.last_accrual_timestamp,
             maturity,
@@ -2135,9 +2136,10 @@ fn chaos_extreme_fee_near_u64_max() {
     let interest_delta_wad = oracle_interest_delta_wad(annual_bps, 0, i64::MAX, one_year);
     let fee_delta_wad = interest_delta_wad * u128::from(MAX_FEE_RATE_BPS) / BPS;
 
+    // Use pre-accrual scale factor (WAD) for fee computation (Finding 10)
     let fee_for_supply = |supply: u128| -> Option<u128> {
         supply
-            .checked_mul(new_sf)?
+            .checked_mul(WAD)?
             .checked_div(WAD)?
             .checked_mul(fee_delta_wad)?
             .checked_div(WAD)
@@ -2256,7 +2258,7 @@ fn chaos_stress_interleaved_many_actors_close_timestamps() {
         );
         let expected_fee_delta = oracle_fee_delta_normalized(
             pre_snap.scaled_total_supply,
-            expected_sf_after_accrual,
+            pre_snap.scale_factor, // pre-accrual scale factor (Finding 10)
             annual_bps,
             pre_snap.last_accrual_timestamp,
             maturity,

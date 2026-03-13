@@ -301,7 +301,7 @@ fn tla_accrue_interest_effect(
         tla_mul_wad(days_growth, wad + remaining_delta),
     );
 
-    // Fee computation uses new_sf (matching production interest.rs)
+    // Fee computation uses pre-accrual scale_factor (Finding 10 fix)
     let growth_wad = tla_mul_wad(days_growth, wad + remaining_delta);
     let interest_delta_wad = growth_wad.saturating_sub(wad);
     let fee_delta_wad = if fee_rate_bps > 0 {
@@ -311,7 +311,7 @@ fn tla_accrue_interest_effect(
     };
     let fee_normalized = if fee_rate_bps > 0 {
         tla_div(
-            tla_div(state.scaled_total_supply * new_sf, wad) * fee_delta_wad,
+            tla_div(state.scaled_total_supply * state.scale_factor, wad) * fee_delta_wad,
             wad,
         )
     } else {

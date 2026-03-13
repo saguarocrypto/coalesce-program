@@ -124,15 +124,15 @@ fn fee_delta_after_elapsed(
     }
 
     let growth = math_oracle::growth_factor_wad(annual_bps, elapsed_seconds);
-    let new_sf = math_oracle::mul_wad(scale_factor_before, growth);
     let interest_delta_wad = growth.checked_sub(WAD).unwrap();
     let fee_delta_wad = interest_delta_wad
         .checked_mul(u128::from(fee_rate_bps))
         .unwrap()
         .checked_div(BPS)
         .unwrap();
+    // Use pre-accrual scale_factor_before (matches on-chain Finding 10 fix)
     let fee_normalized = scaled_supply
-        .checked_mul(new_sf)
+        .checked_mul(scale_factor_before)
         .unwrap()
         .checked_div(WAD)
         .unwrap()
@@ -429,10 +429,10 @@ fn mutation_fee_rate_zero_check() {
     );
 }
 
-/// Mutant class: old_sf→new_sf swap in fee computation
+/// Mutant class: old_sf→new_sf swap in fee computation (Finding 10 fix)
 ///
-/// Mutation: Change fee formula to use old scale_factor instead of new.
-/// This test verifies the fee uses the NEW scale_factor.
+/// Mutation: Change fee formula to use new_scale_factor (post-accrual) instead of old.
+/// On-chain code now correctly uses pre-accrual scale_factor for fee computation.
 #[test]
 fn mutation_fee_uses_old_scale_factor() {
     let supply = 1_000_000_000_000u128;
@@ -453,14 +453,14 @@ fn mutation_fee_uses_old_scale_factor() {
 
     assert_eq!(market.accrued_protocol_fees(), expected_fee);
 
-    // Mutant: using OLD scale_factor (WAD) gives smaller fee
-    let fee_with_old_sf = (supply * WAD / WAD * fee_delta_wad / WAD) as u64;
+    // Mutant: using NEW scale_factor (post-accrual) gives larger fee
+    let fee_with_new_sf = (supply * new_sf / WAD * fee_delta_wad / WAD) as u64;
     assert_ne!(
         market.accrued_protocol_fees(),
-        fee_with_old_sf,
-        "fees must NOT match old_sf mutant"
+        fee_with_new_sf,
+        "fees must NOT match new_sf mutant value"
     );
-    assert!(expected_fee > fee_with_old_sf);
+    assert!(fee_with_new_sf > expected_fee);
 }
 
 // ===========================================================================

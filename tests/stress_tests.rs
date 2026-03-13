@@ -96,7 +96,7 @@ fn expected_scale_factor(
 
 fn expected_fee_delta(
     scaled_total_supply: u128,
-    new_scale_factor: u128,
+    scale_factor_before: u128,
     annual_interest_bps: u16,
     fee_rate_bps: u16,
     elapsed_seconds: i64,
@@ -114,8 +114,9 @@ fn expected_fee_delta(
     let fee_delta_wad = interest_delta_wad
         .checked_mul(u128::from(fee_rate_bps))?
         .checked_div(BPS)?;
+    // Use pre-accrual scale_factor_before (matches on-chain Finding 10 fix)
     let fee_normalized = scaled_total_supply
-        .checked_mul(new_scale_factor)?
+        .checked_mul(scale_factor_before)?
         .checked_div(WAD)?
         .checked_mul(fee_delta_wad)?
         .checked_div(WAD)?;
@@ -192,7 +193,7 @@ fn stress_interest_accrual_large_supply() {
             );
             let expected_fee = expected_fee_delta(
                 max_safe_supply,
-                expected_sf,
+                WAD,
                 10_000,
                 10_000,
                 SECONDS_PER_YEAR as i64,
@@ -281,7 +282,7 @@ fn stress_interest_compound_on_large_scale_factor() {
                 "sf must match daily-compound oracle after 100% on 10x"
             );
             let expected_fee =
-                expected_fee_delta(supply, expected_sf, 10_000, 5000, SECONDS_PER_YEAR as i64)
+                expected_fee_delta(supply, big_sf, 10_000, 5000, SECONDS_PER_YEAR as i64)
                     .expect("expected fee should fit");
             assert_eq!(
                 market.accrued_protocol_fees(),
@@ -501,7 +502,7 @@ fn stress_fee_max_rates() {
     );
 
     let expected_fee =
-        expected_fee_delta(supply, expected_sf, 10_000, 10_000, SECONDS_PER_YEAR as i64)
+        expected_fee_delta(supply, WAD, 10_000, 10_000, SECONDS_PER_YEAR as i64)
             .expect("expected fee should fit");
     assert_eq!(
         market.accrued_protocol_fees(),
@@ -680,7 +681,7 @@ fn stress_full_lifecycle_large_amounts() {
         expected_sf
     );
 
-    let expected_fee = expected_fee_delta(supply, expected_sf, 5000, 5000, SECONDS_PER_YEAR as i64)
+    let expected_fee = expected_fee_delta(supply, WAD, 5000, 5000, SECONDS_PER_YEAR as i64)
         .expect("expected fee should fit");
     assert_eq!(
         market.accrued_protocol_fees(),

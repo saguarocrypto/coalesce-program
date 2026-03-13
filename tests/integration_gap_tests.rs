@@ -924,10 +924,11 @@ async fn g3_1_fee_collection_correct_amount() {
     // At 10% annual (daily compound), 5% fee rate, 1 USDC scaled supply:
     //   interest_delta_wad = 105_155_781_616_264_095
     //   fee_delta_wad = interest_delta * 500 / 10000
-    //   fee_normalized = scaled_supply * new_sf / WAD * fee_delta_wad / WAD = 5810
+    //   fee_normalized = scaled_supply * WAD / WAD * fee_delta_wad / WAD = 5257
+    //   (Finding 10 fix: uses pre-accrual scale factor WAD, not post-accrual new_sf)
     let market_data = get_account_data(&mut ctx, &market).await;
     let parsed = parse_market(&market_data);
-    let expected_fee: u64 = 5_810;
+    let expected_fee: u64 = 5_257;
     assert!(
         parsed.accrued_protocol_fees >= expected_fee,
         "Fees should have accrued: got {} expected >= {}",
@@ -1011,7 +1012,8 @@ async fn g3_1_fee_collection_correct_amount() {
     //   growth = pow_wad(WAD + daily_rate, 365) = 1_105_155_781_616_264_095
     //   interest_delta_wad = growth - WAD = 105_155_781_616_264_095
     //   fee_delta_wad = interest_delta * 500 / 10000 = 5_257_789_080_813_204
-    //   fee_normalized = 1_000_000 * new_sf / WAD * fee_delta_wad / WAD = 5810
+    //   fee_normalized = 1_000_000 * WAD / WAD * fee_delta_wad / WAD = 5257
+    //   (Finding 10 fix: uses pre-accrual scale factor WAD, not post-accrual new_sf)
     // Note: The tiny trigger deposit (1 scaled unit) adds negligible additional fees
     assert!(
         fee_balance >= expected_fee && fee_balance <= expected_fee + 10,

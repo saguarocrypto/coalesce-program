@@ -798,7 +798,8 @@ fn pod_layout_protocol_config_size_and_offsets() {
     assert_eq!(offset_of!(ProtocolConfig, bump), 140);
     assert_eq!(offset_of!(ProtocolConfig, paused), 141);
     assert_eq!(offset_of!(ProtocolConfig, blacklist_mode), 142);
-    assert_eq!(offset_of!(ProtocolConfig, padding), 143);
+    assert_eq!(offset_of!(ProtocolConfig, allowed_mint), 143);
+    assert_eq!(offset_of!(ProtocolConfig, padding), 175);
 }
 
 #[test]
@@ -825,7 +826,8 @@ fn pod_layout_protocol_config_write_and_verify_raw() {
     assert_eq!(raw[140], 200);
     assert_eq!(raw[141], 0); // paused (zeroed)
     assert_eq!(raw[142], 0); // blacklist_mode (zeroed)
-    assert_eq!(&raw[143..194], &[0u8; 51]);
+    assert_eq!(&raw[143..175], &[0u8; 32]); // allowed_mint (zeroed)
+    assert_eq!(&raw[175..194], &[0u8; 19]); // padding
 }
 
 #[test]
@@ -930,7 +932,7 @@ fn analytical_accrue(
     let new_sf = interest_oracle::scale_factor_after_exact(initial_sf, annual_bps_u16, elapsed_i64);
     let fees = interest_oracle::fee_delta_exact(
         supply,
-        new_sf,
+        initial_sf,
         annual_bps_u16,
         fee_rate_bps_u16,
         elapsed_i64,

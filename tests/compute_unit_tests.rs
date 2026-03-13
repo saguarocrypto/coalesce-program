@@ -294,11 +294,9 @@ fn fee_delta_exact(
     fee_rate_bps: u16,
     elapsed_seconds: i64,
 ) -> u64 {
-    let new_scale_factor =
-        scale_factor_after_exact(scale_factor_before, annual_bps, elapsed_seconds);
     interest_oracle::fee_delta_exact(
         scaled_total_supply,
-        new_scale_factor,
+        scale_factor_before,
         annual_bps,
         fee_rate_bps,
         elapsed_seconds,

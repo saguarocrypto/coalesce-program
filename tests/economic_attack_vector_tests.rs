@@ -1307,11 +1307,11 @@ fn attack_fee_many_small_vs_one_large() {
     );
 
     // Path dependence is expected under floor division and per-step fee accrual.
-    // For this fixed scenario, many small steps should not charge more total fees
-    // than a single one-year accrual.
+    // After Finding 10 (pre-accrual SF), multi-step accrual uses progressively
+    // larger scale factors as input, so multi_fees >= single_fees is expected.
     assert!(
-        multi_fees <= single_fees,
-        "Unexpected fee ordering: multi-step fees {} should be <= single-step fees {}",
+        multi_fees >= single_fees,
+        "Unexpected fee ordering: multi-step fees {} should be >= single-step fees {}",
         multi_fees,
         single_fees
     );
@@ -1363,8 +1363,9 @@ fn attack_fee_overflow_u64_boundary() {
             );
             let interest_delta_wad =
                 compute_interest_delta(u128::from(annual_bps), total_time as u128);
+            // Use pre-accrual SF (WAD) for interest bound check (Finding 10)
             let interest_on_supply = scaled_supply
-                .checked_mul(market.scale_factor())
+                .checked_mul(WAD)
                 .unwrap_or(u128::MAX)
                 .checked_div(WAD)
                 .unwrap_or(u128::MAX)
@@ -1438,11 +1439,12 @@ proptest! {
                     .checked_mul(u128::from(fee_rate_bps))
                     .unwrap_or(u128::MAX)
                     / BPS;
+                // Use pre-accrual scale factor (WAD) for fee computation (Finding 10)
                 let expected_fee = supply
-                    .checked_mul(new_sf).unwrap_or(u128::MAX) / WAD
+                    .checked_mul(WAD).unwrap_or(u128::MAX) / WAD
                     * fee_delta_wad / WAD;
                 let interest_on_supply = supply
-                    .checked_mul(new_sf).unwrap_or(u128::MAX) / WAD
+                    .checked_mul(WAD).unwrap_or(u128::MAX) / WAD
                     * interest_delta_wad / WAD;
 
                 prop_assert_eq!(

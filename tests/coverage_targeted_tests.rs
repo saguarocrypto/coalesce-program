@@ -177,15 +177,15 @@ fn expected_fee_delta_single_step(
     }
 
     let growth_wad = math_oracle::growth_factor_wad(annual_bps, elapsed_seconds);
-    let new_scale_factor = math_oracle::mul_wad(scale_factor_before, growth_wad);
     let interest_delta_wad = growth_wad.checked_sub(WAD).unwrap();
     let fee_delta_wad = interest_delta_wad
         .checked_mul(u128::from(fee_rate_bps))
         .unwrap()
         .checked_div(BPS)
         .unwrap();
+    // Use pre-accrual scale_factor_before (Finding 10 fix)
     let fee_normalized = scaled_total_supply
-        .checked_mul(new_scale_factor)
+        .checked_mul(scale_factor_before)
         .unwrap()
         .checked_div(WAD)
         .unwrap()
@@ -1598,7 +1598,8 @@ fn fee_exact_value_10pct_50fee() {
 
     assert_eq!(market.accrued_protocol_fees(), expected_fee);
     assert!(expected_fee > 0);
-    assert!(expected_fee > 55_000_000_000);
+    // With Finding 10 fix (pre-accrual SF), fee is ~52.5B not ~58B
+    assert!(expected_fee > 50_000_000_000);
 
     let mut lower_fee_market = make_market(annual_bps, i64::MAX, WAD, supply, 0, 0);
     accrue_interest(

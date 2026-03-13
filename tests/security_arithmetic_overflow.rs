@@ -461,8 +461,9 @@ async fn test_repay_u64_max_amount() {
         .await
         .map_err(|e| e.unwrap());
 
-    // SPL Token `InsufficientFunds` maps to token custom error 1.
-    common::assert_custom_error(&result, 1);
+    // Finding 9: Per-market repayment cap rejects u64::MAX before SPL transfer.
+    // RepaymentExceedsDebt = 35.
+    common::assert_custom_error(&result, 35);
 
     // Verify state immutability after failed tx
     let snap_after =

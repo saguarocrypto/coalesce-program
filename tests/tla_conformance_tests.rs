@@ -200,7 +200,7 @@ fn oracle_scale_factor_after_accrual(
 /// Oracle: fee delta in normalized units for one accrual step.
 fn oracle_fee_delta_normalized(
     scaled_total_supply: u128,
-    new_scale_factor: u128,
+    scale_factor_before: u128,
     interest_delta_wad: u128,
     fee_rate_bps: u16,
 ) -> u64 {
@@ -208,7 +208,8 @@ fn oracle_fee_delta_normalized(
         return 0;
     }
     let fee_delta_wad = interest_delta_wad * u128::from(fee_rate_bps) / BPS;
-    let fee_normalized = scaled_total_supply * new_scale_factor / WAD * fee_delta_wad / WAD;
+    // Use pre-accrual scale_factor_before (matches on-chain Finding 10 fix)
+    let fee_normalized = scaled_total_supply * scale_factor_before / WAD * fee_delta_wad / WAD;
     u64::try_from(fee_normalized).unwrap()
 }
 
@@ -1455,7 +1456,7 @@ fn tla_invariant_scale_factor_monotonic() {
         );
         let expected_fee_delta = oracle_fee_delta_normalized(
             state.market.scaled_total_supply(),
-            expected_sf,
+            state.market.scale_factor(),
             expected_interest_delta,
             state.config.fee_rate_bps(),
         );
@@ -1701,7 +1702,7 @@ fn tla_invariant_fees_non_negative() {
         );
         let expected_fee_delta = oracle_fee_delta_normalized(
             state.market.scaled_total_supply(),
-            expected_sf,
+            state.market.scale_factor(),
             expected_interest_delta,
             state.config.fee_rate_bps(),
         );
@@ -2560,7 +2561,7 @@ fn tla_accrue_interest_formula_match() {
             oracle_scale_factor_after_accrual(WAD, annual_bps, 0, checkpoint, i64::MAX);
         let expected_fees = oracle_fee_delta_normalized(
             scaled_supply,
-            expected_sf,
+            WAD,
             interest_delta_wad,
             fee_rate_bps,
         );
@@ -2767,7 +2768,7 @@ fn tla_repay_zero_fee_accrual() {
     let mut market_with_fee = base;
     accrue_interest(&mut market_with_fee, &fee_config, 86400).unwrap();
     let expected_fee_delta =
-        oracle_fee_delta_normalized(base.scaled_total_supply(), expected_sf, expected_delta, 500);
+        oracle_fee_delta_normalized(base.scaled_total_supply(), base.scale_factor(), expected_delta, 500);
     assert_eq!(market_with_fee.scale_factor(), expected_sf);
     assert_eq!(
         market_with_fee.accrued_protocol_fees(),
@@ -2803,7 +2804,7 @@ fn tla_resettle_zero_fee_accrual() {
     let mut market_with_fee = base;
     accrue_interest(&mut market_with_fee, &fee_config, 500_000).unwrap();
     let expected_fee_delta =
-        oracle_fee_delta_normalized(base.scaled_total_supply(), expected_sf, expected_delta, 500);
+        oracle_fee_delta_normalized(base.scaled_total_supply(), base.scale_factor(), expected_delta, 500);
     assert_eq!(market_with_fee.scale_factor(), expected_sf);
     assert_eq!(
         market_with_fee.accrued_protocol_fees(),

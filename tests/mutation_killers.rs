@@ -123,15 +123,15 @@ fn fee_delta_after_elapsed(
     }
 
     let growth = math_oracle::growth_factor_wad(annual_bps, elapsed_seconds);
-    let new_sf = math_oracle::mul_wad(scale_factor_before, growth);
     let interest_delta_wad = growth.checked_sub(WAD).unwrap();
     let fee_delta_wad = interest_delta_wad
         .checked_mul(u128::from(fee_rate_bps))
         .unwrap()
         .checked_div(BPS)
         .unwrap();
+    // Use pre-accrual scale_factor_before (matches on-chain Finding 10 fix)
     let fee_normalized = scaled_supply
-        .checked_mul(new_sf)
+        .checked_mul(scale_factor_before)
         .unwrap()
         .checked_div(WAD)
         .unwrap()
@@ -343,12 +343,13 @@ fn kill_fee_delta_wrong_denominator() {
 // Kill: new_scale_factor vs old_scale_factor in fee computation
 // ===========================================================================
 
-/// Mutant class: new_sf→old_sf in fee computation
+/// Mutant class: old_sf→new_sf in fee computation (Finding 10 fix)
 ///
-/// Kill mutation: use scale_factor (old) instead of new_scale_factor in fee.
+/// Kill mutation: use new_scale_factor (post-accrual) instead of old scale_factor.
+/// On-chain code now correctly uses pre-accrual scale_factor for fee computation.
 #[test]
 fn kill_fee_uses_old_vs_new_sf() {
-    // Mutant: fee = supply * old_sf / WAD * fee_delta / WAD (instead of new_sf)
+    // Mutant: fee = supply * new_sf / WAD * fee_delta / WAD (instead of old_sf)
     let supply = 1_000_000_000_000u128;
     let annual_bps = 1000u16;
     let fee_rate = 10_000u16; // 100% fee — all interest goes to fees
@@ -363,21 +364,20 @@ fn kill_fee_uses_old_vs_new_sf() {
     let interest_delta_wad = growth - WAD;
     let fee_with_new = supply * new_sf / WAD * interest_delta_wad / WAD;
 
-    // With old_sf: fee = supply * WAD / WAD * (WAD/10) / WAD
-    //            = supply * 0.1
+    // With old_sf (pre-accrual = WAD): fee = supply * WAD / WAD * interest_delta / WAD
     let fee_with_old = supply * WAD / WAD * interest_delta_wad / WAD;
 
     // They should be different
     assert!(fee_with_new > fee_with_old);
 
-    // Actual should match new_sf computation
-    assert_eq!(market.accrued_protocol_fees(), fee_with_new as u64);
+    // Actual should match pre-accrual (old_sf) computation (Finding 10 fix)
+    assert_eq!(market.accrued_protocol_fees(), fee_with_old as u64);
 
-    // Explicitly assert NOT the mutant value
+    // Explicitly assert NOT the mutant value (post-accrual new_sf)
     assert_ne!(
         market.accrued_protocol_fees(),
-        fee_with_old as u64,
-        "fees must NOT match old_sf mutant value"
+        fee_with_new as u64,
+        "fees must NOT match new_sf mutant value"
     );
 }
 

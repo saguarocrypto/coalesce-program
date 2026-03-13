@@ -1554,7 +1554,7 @@ fn oracle_scale_factor_after_step(
 
 fn oracle_fee_delta_normalized(
     scaled_total_supply: u128,
-    new_scale_factor: u128,
+    scale_factor_before: u128,
     annual_interest_bps: u16,
     last_accrual_timestamp: i64,
     maturity_timestamp: i64,
@@ -1576,8 +1576,9 @@ fn oracle_fee_delta_normalized(
     let fee_delta_wad = interest_delta_wad
         .checked_mul(u128::from(fee_rate_bps))?
         .checked_div(BPS)?;
+    // Use pre-accrual scale_factor_before (matches on-chain Finding 10 fix)
     let fee_normalized = scaled_total_supply
-        .checked_mul(new_scale_factor)?
+        .checked_mul(scale_factor_before)?
         .checked_div(WAD)?
         .checked_mul(fee_delta_wad)?
         .checked_div(WAD)?;
@@ -1695,7 +1696,7 @@ proptest! {
                             .expect("oracle scale overflow");
                             let expected_fee_delta = oracle_fee_delta_normalized(
                                 before.scaled_total_supply,
-                                expected_sf,
+                                before.scale_factor,
                                 before.annual_interest_bps,
                                 before.last_accrual_timestamp,
                                 before.maturity_timestamp,
@@ -1860,7 +1861,7 @@ proptest! {
                         .expect("oracle scale overflow");
                         let expected_fee_delta = oracle_fee_delta_normalized(
                             before.scaled_total_supply,
-                            expected_sf,
+                            before.scale_factor,
                             before.annual_interest_bps,
                             before.last_accrual_timestamp,
                             before.maturity_timestamp,
@@ -2300,7 +2301,7 @@ proptest! {
                             .expect("oracle scale overflow");
                             let expected_fee_delta = oracle_fee_delta_normalized(
                                 before.scaled_total_supply,
-                                expected_sf,
+                                before.scale_factor,
                                 before.annual_interest_bps,
                                 before.last_accrual_timestamp,
                                 before.maturity_timestamp,
@@ -2706,7 +2707,7 @@ proptest! {
         .expect("oracle scale overflow");
         let expected_fee_delta = oracle_fee_delta_normalized(
             before_accrue.scaled_total_supply,
-            expected_sf,
+            before_accrue.scale_factor,
             interest_bps,
             before_accrue.last_accrual_timestamp,
             before_accrue.maturity_timestamp,
@@ -3313,7 +3314,7 @@ proptest! {
                 .expect("oracle scale overflow");
         let expected_fees = oracle_fee_delta_normalized(
             scaled_supply,
-            expected_sf,
+            WAD,
             interest_bps,
             start_ts,
             maturity,
@@ -3384,7 +3385,7 @@ proptest! {
             .expect("oracle scale overflow");
             let expected_fee_delta = oracle_fee_delta_normalized(
                 scaled_supply,
-                expected_sf,
+                prev_scale,
                 interest_bps,
                 prev_last_ts,
                 maturity,
@@ -3574,7 +3575,7 @@ proptest! {
         .expect("oracle scale overflow");
         let expected_fee_delta_pre = oracle_fee_delta_normalized(
             before_pre_maturity_accrue.scaled_total_supply,
-            expected_sf_pre,
+            before_pre_maturity_accrue.scale_factor,
             interest_bps,
             before_pre_maturity_accrue.last_accrual_timestamp,
             maturity,
@@ -3620,7 +3621,7 @@ proptest! {
         .expect("oracle scale overflow");
         let expected_fee_delta_maturity = oracle_fee_delta_normalized(
             before_maturity_accrue.scaled_total_supply,
-            expected_sf_maturity,
+            before_maturity_accrue.scale_factor,
             interest_bps,
             before_maturity_accrue.last_accrual_timestamp,
             maturity,

@@ -199,10 +199,11 @@ fn project_scale_and_fees_for_withdraw(
             .expect("interest_delta * fee_rate overflow")
             .checked_div(BPS)
             .expect("division by zero in fee delta");
+        // Use pre-accrual scale_factor (matches on-chain Finding 10 fix)
         let fee_normalized = market
             .scaled_total_supply
-            .checked_mul(new_scale_factor)
-            .expect("scaled_total_supply * new_scale_factor overflow")
+            .checked_mul(market.scale_factor)
+            .expect("scaled_total_supply * scale_factor overflow")
             .checked_div(WAD)
             .expect("division by zero in fee normalized (1)")
             .checked_mul(fee_delta_wad)

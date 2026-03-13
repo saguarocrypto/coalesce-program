@@ -244,7 +244,7 @@ fn expected_scale_factor_after_elapsed(
 
 fn expected_fee_delta(
     scaled_total_supply: u128,
-    resulting_scale_factor: u128,
+    pre_accrual_scale_factor: u128,
     annual_interest_bps: u16,
     elapsed_seconds: i64,
     fee_rate_bps: u16,
@@ -259,7 +259,7 @@ fn expected_fee_delta(
         .checked_div(BPS)
         .expect("fee delta division by zero");
     let fee_normalized = scaled_total_supply
-        .checked_mul(resulting_scale_factor)
+        .checked_mul(pre_accrual_scale_factor)
         .expect("supply * scale overflow")
         .checked_div(WAD)
         .expect("fee path division by zero")
@@ -736,7 +736,7 @@ fn upgrade_deterministic_identical_reruns() {
         );
         let expected_fee_delta = expected_fee_delta(
             scenario.scaled_supply,
-            expected_sf,
+            scenario.starting_scale_factor,
             scenario.annual_bps,
             elapsed,
             scenario.fee_rate_bps,
@@ -837,7 +837,7 @@ fn upgrade_deterministic_key_fields_stable() {
         let expected_sf = expected_scale_factor_after_elapsed(WAD, case.annual_bps, case.elapsed);
         let expected_fees = expected_fee_delta(
             case.supply,
-            expected_sf,
+            WAD,
             case.annual_bps,
             case.elapsed,
             case.fee_rate_bps,
@@ -948,7 +948,7 @@ fn upgrade_deterministic_full_scenario_replay() {
         accrue_interest(&mut m, &config, year / 2).unwrap();
         let expected_sf_half = expected_scale_factor_after_elapsed(WAD, 1000, year / 2);
         let expected_fee_half =
-            expected_fee_delta(1_000_000_000, expected_sf_half, 1000, year / 2, 500);
+            expected_fee_delta(1_000_000_000, WAD, 1000, year / 2, 500);
         assert_eq!(m.scale_factor(), expected_sf_half);
         assert_eq!(m.accrued_protocol_fees(), expected_fee_half);
         assert_eq!(m.last_accrual_timestamp(), year / 2);
@@ -959,7 +959,7 @@ fn upgrade_deterministic_full_scenario_replay() {
         let expected_sf_full =
             expected_scale_factor_after_elapsed(expected_sf_half, 1000, year / 2);
         let expected_fee_second =
-            expected_fee_delta(1_000_000_000, expected_sf_full, 1000, year / 2, 500);
+            expected_fee_delta(1_000_000_000, expected_sf_half, 1000, year / 2, 500);
         assert_eq!(m.scale_factor(), expected_sf_full);
         assert_eq!(
             m.accrued_protocol_fees(),
@@ -1005,7 +1005,7 @@ fn upgrade_boundary_u64_overflow_detection() {
 
     // Build boundary values from the oracle so the test tracks the production formula.
     let expected_new_sf = expected_scale_factor_after_elapsed(WAD, 10_000, year);
-    let exact_fee_delta = expected_fee_delta(1, expected_new_sf, 10_000, year, 10_000);
+    let exact_fee_delta = expected_fee_delta(1, WAD, 10_000, year, 10_000);
     assert!(
         exact_fee_delta > 0,
         "boundary scenario fee delta should be positive"
@@ -1381,7 +1381,7 @@ fn upgrade_invariant_lifecycle_stages() {
     accrue_interest(&mut m, &config, half_year_ts).unwrap();
     let expected_half_sf = expected_scale_factor_after_elapsed(WAD, 1000, year / 2);
     let expected_half_fee =
-        expected_fee_delta(5_000_000_000, expected_half_sf, 1000, year / 2, 500);
+        expected_fee_delta(5_000_000_000, WAD, 1000, year / 2, 500);
     assert_eq!(m.scale_factor(), expected_half_sf);
     assert_eq!(m.accrued_protocol_fees(), expected_half_fee);
     assert_eq!(m.last_accrual_timestamp(), half_year_ts);
@@ -1400,7 +1400,7 @@ fn upgrade_invariant_lifecycle_stages() {
     accrue_interest(&mut m, &config, maturity_ts + 1_000_000).unwrap();
     let expected_full_sf = expected_scale_factor_after_elapsed(expected_half_sf, 1000, year / 2);
     let expected_second_fee =
-        expected_fee_delta(5_000_000_000, expected_full_sf, 1000, year / 2, 500);
+        expected_fee_delta(5_000_000_000, expected_half_sf, 1000, year / 2, 500);
     assert_eq!(m.scale_factor(), expected_full_sf);
     assert_eq!(
         m.accrued_protocol_fees(),

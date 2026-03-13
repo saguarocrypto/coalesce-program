@@ -171,10 +171,10 @@ fn expected_fee_delta(
         return 0;
     }
 
-    let new_sf = expected_scale_factor(initial_sf, annual_bps, elapsed_seconds);
     let fee_delta_wad =
         expected_interest_delta_wad(annual_bps, elapsed_seconds) * u128::from(fee_rate_bps) / BPS;
-    let fee = scaled_supply * new_sf / WAD * fee_delta_wad / WAD;
+    // Use pre-accrual initial_sf (matches on-chain Finding 10 fix)
+    let fee = scaled_supply * initial_sf / WAD * fee_delta_wad / WAD;
     u64::try_from(fee).expect("fee must fit u64")
 }
 

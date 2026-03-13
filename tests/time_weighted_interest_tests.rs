@@ -201,9 +201,10 @@ fn oracle_accrue_step(
             .expect("interest_delta * fee_rate overflow")
             .checked_div(BPS)
             .expect("fee_delta division failed");
+        // Use pre-accrual scale_factor (matches on-chain Finding 10 fix)
         let fee_normalized = scaled_total_supply
-            .checked_mul(new_scale_factor)
-            .expect("supply * new_scale overflow")
+            .checked_mul(state.scale_factor)
+            .expect("supply * scale_factor overflow")
             .checked_div(WAD)
             .expect("normalized supply division failed")
             .checked_mul(fee_delta_wad)

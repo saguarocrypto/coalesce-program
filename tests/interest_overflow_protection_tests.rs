@@ -123,14 +123,14 @@ fn scale_factor_after_elapsed_exact(
 
 fn fee_delta_exact(
     scaled_total_supply: u128,
-    new_scale_factor: u128,
+    scale_factor_before: u128,
     annual_bps: u16,
     fee_rate_bps: u16,
     elapsed_seconds: i64,
 ) -> u64 {
     interest_oracle::fee_delta_exact(
         scaled_total_supply,
-        new_scale_factor,
+        scale_factor_before,
         annual_bps,
         fee_rate_bps,
         elapsed_seconds,
@@ -186,12 +186,14 @@ fn overflow_huge_scale_factor_times_interest_delta() {
 
 #[test]
 fn overflow_huge_supply_times_scale_factor_in_fee_calc() {
-    // Boundary: x should succeed, x+1 should overflow in supply * new_scale_factor.
+    // Boundary: x should succeed, x+1 should overflow in supply * scale_factor_before.
+    // After Finding 10 fix, fee uses pre-accrual SF (WAD here), not post-accrual.
     let annual_bps: u16 = 10_000; // 100% => new_sf = 2 * WAD after one year
     let fee_rate_bps: u16 = 1; // keep fee truncation path away from u64 overflow
     let elapsed = SECONDS_PER_YEAR as i64;
     let expected_sf = scale_factor_after_elapsed_exact(WAD, annual_bps, elapsed);
-    let max_safe_supply_for_mul = u128::MAX / expected_sf;
+    // With pre-accrual SF (WAD), overflow boundary is u128::MAX / WAD
+    let max_safe_supply_for_mul = u128::MAX / WAD;
     let overflow_supply = max_safe_supply_for_mul + 1;
     let config = make_config(fee_rate_bps);
 
@@ -201,7 +203,7 @@ fn overflow_huge_supply_times_scale_factor_in_fee_calc() {
 
     let expected_fees = fee_delta_exact(
         max_safe_supply_for_mul,
-        expected_sf,
+        WAD,
         annual_bps,
         fee_rate_bps,
         elapsed,
@@ -230,7 +232,7 @@ fn overflow_fee_truncation_to_u64() {
     let mut hi = max_u64_u128;
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
-        let fee_mid = fee_normalized_u128_exact(mid, expected_sf, idw);
+        let fee_mid = fee_normalized_u128_exact(mid, WAD, idw);
         if fee_mid <= max_u64_u128 {
             lo = mid;
         } else {
@@ -249,7 +251,7 @@ fn overflow_fee_truncation_to_u64() {
     );
     assert_eq!(safe_market.scale_factor(), expected_sf);
     let expected_safe_fee =
-        fee_delta_exact(safe_supply, expected_sf, annual_bps, fee_rate_bps, elapsed);
+        fee_delta_exact(safe_supply, WAD, annual_bps, fee_rate_bps, elapsed);
     assert_eq!(safe_market.accrued_protocol_fees(), expected_safe_fee);
     assert_eq!(safe_market.last_accrual_timestamp(), elapsed);
 
@@ -280,7 +282,7 @@ fn no_overflow_with_realistic_parameters() {
     // Exact expected values.
     let elapsed = SECONDS_PER_YEAR as i64;
     let expected_sf = scale_factor_after_elapsed_exact(WAD, annual_bps, elapsed);
-    let expected_fee = fee_delta_exact(supply, expected_sf, annual_bps, fee_rate, elapsed);
+    let expected_fee = fee_delta_exact(supply, WAD, annual_bps, fee_rate, elapsed);
     assert_eq!(market.scale_factor(), expected_sf);
     assert_eq!(market.accrued_protocol_fees(), expected_fee);
     assert_eq!(market.last_accrual_timestamp(), elapsed);
@@ -503,7 +505,7 @@ fn boundary_max_time_elapsed() {
         let expected_sf = scale_factor_after_elapsed_exact(WAD, annual_bps, effective_elapsed);
         let expected_fee = fee_delta_exact(
             supply,
-            expected_sf,
+            WAD,
             annual_bps,
             fee_rate_bps,
             effective_elapsed,
@@ -614,14 +616,14 @@ fn regression_fee_accrual_at_100_percent_fee_rate() {
     let mut low = make_market(annual_bps, i64::MAX, WAD, supply, 0, 0);
     accrue_interest(&mut low, &make_config(fee_rate_bps_low), elapsed).unwrap();
     let expected_low_fee =
-        fee_delta_exact(supply, expected_sf, annual_bps, fee_rate_bps_low, elapsed);
+        fee_delta_exact(supply, WAD, annual_bps, fee_rate_bps_low, elapsed);
     assert_eq!(low.scale_factor(), expected_sf);
     assert_eq!(low.accrued_protocol_fees(), expected_low_fee);
 
     let mut high = make_market(annual_bps, i64::MAX, WAD, supply, 0, 0);
     accrue_interest(&mut high, &make_config(fee_rate_bps_high), elapsed).unwrap();
     let expected_high_fee =
-        fee_delta_exact(supply, expected_sf, annual_bps, fee_rate_bps_high, elapsed);
+        fee_delta_exact(supply, WAD, annual_bps, fee_rate_bps_high, elapsed);
     assert_eq!(high.scale_factor(), expected_sf);
     assert_eq!(high.accrued_protocol_fees(), expected_high_fee);
     assert!(high.accrued_protocol_fees() >= low.accrued_protocol_fees());
