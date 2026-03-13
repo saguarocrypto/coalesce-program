@@ -1668,7 +1668,8 @@ async fn g5_1_capacity_enforcement_at_boundary() {
 // G6: Fee Reservation Limits Borrowing (1 test)
 // ===========================================================================
 
-/// G6.1: With accrued fees, borrower cannot borrow more than vault - fees.
+/// G6.1: COAL-L02 — Borrower can borrow full vault balance even with accrued fees.
+/// Fees are virtual pre-maturity; collect_fees blocks extraction while lenders have deposits.
 #[tokio::test]
 async fn g6_1_fee_reservation_limits_borrow() {
     let mut ctx = common::start_context().await;
@@ -1740,24 +1741,24 @@ async fn g6_1_fee_reservation_limits_borrow() {
     );
     ctx.banks_client.process_transaction(tx).await.unwrap();
 
-    // Read start timestamp and advance 1 year
+    // Read start timestamp and advance 1 year to accrue significant fees
     let market_data = get_account_data(&mut ctx, &market).await;
     let parsed = parse_market(&market_data);
     advance_clock_past(&mut ctx, parsed.last_accrual_timestamp + 31_536_000).await;
 
-    // Take snapshot before failure attempts
     let (vault, _) = get_vault_pda(&market);
-    let (lender_pos, _) = get_lender_position_pda(&market, &lender.pubkey());
-    let snapshot_before = ProtocolSnapshot::capture(&mut ctx, &market, &vault, &[lender_pos]).await;
 
-    // Try to borrow all 1000 USDC — should fail because fees are reserved
+    // COAL-L02: Borrow full vault balance — should succeed even with accrued fees.
+    // Fees are virtual pre-maturity; collect_fees blocks extraction while lenders
+    // have deposits (SR-113).
     let borrower_token = create_token_account(&mut ctx, &mint, &borrower.pubkey()).await;
+    let vault_balance = get_token_balance(&mut ctx, &vault).await;
     let borrow_ix = build_borrow(
         &market,
         &borrower.pubkey(),
         &borrower_token.pubkey(),
         &blacklist_program.pubkey(),
-        1_000 * USDC,
+        vault_balance,
     );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
@@ -1766,102 +1767,27 @@ async fn g6_1_fee_reservation_limits_borrow() {
         &[&ctx.payer, &borrower],
         recent,
     );
-
-    let result = ctx
-        .banks_client
-        .process_transaction(tx)
-        .await
-        .map_err(|e| e.unwrap());
-    // BorrowAmountTooHigh = Custom(26)
-    assert_custom_error(&result, 26);
-
-    // Verify ALL state unchanged after failed borrow
-    let snapshot_after = ProtocolSnapshot::capture(&mut ctx, &market, &vault, &[lender_pos]).await;
-    snapshot_before.assert_unchanged(&snapshot_after);
-
-    // Verify borrower token account wasn't credited
-    let borrower_balance = get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
-    assert_eq!(
-        borrower_balance, 0,
-        "Failed borrow must not credit borrower"
-    );
-
-    // Read current fees to compute exact available amount
-    // Interest accrual happens on the borrow instruction, so we need to trigger it first.
-    // The failed borrow above already triggered accrual (happens before the amount check).
-    // Actually, failed txs are rolled back, so we need a successful accrual trigger.
-    // The deposit already accrued at deposit time; advancing clock doesn't auto-accrue.
-    // Let's read vault balance and fees to compute available.
-    // NOTE: Accrual is triggered on deposit/borrow/withdraw. Since we only deposited before
-    // advancing the clock, and borrow failed (rolled back), fees haven't been accrued on-chain yet.
-    // We need a successful tx to trigger accrual. Let's do a small deposit to trigger it.
-    // Mint a small amount since the lender deposited all tokens above.
-    mint_to_account(&mut ctx, &mint, &lender_token.pubkey(), &admin, 100).await;
-    let deposit_trigger = build_deposit(
-        &market,
-        &lender.pubkey(),
-        &lender_token.pubkey(),
-        &mint,
-        &blacklist_program.pubkey(),
-        2, // 2 base units to trigger accrual
-    );
-    let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
-    let tx = Transaction::new_signed_with_payer(
-        &[deposit_trigger],
-        Some(&ctx.payer.pubkey()),
-        &[&ctx.payer, &lender],
-        recent,
-    );
-    ctx.banks_client.process_transaction(tx).await.unwrap();
-
-    // Now read the accrued fees and vault balance
-    let market_data = get_account_data(&mut ctx, &market).await;
-    let parsed = parse_market(&market_data);
-    let fees = parsed.accrued_protocol_fees;
-    let vault_balance = get_token_balance(&mut ctx, &vault).await;
-    assert!(
-        fees > 0,
-        "Fees should be non-zero after 1 year at 10% with 50% fee rate"
-    );
-
-    let available = vault_balance - fees;
-
-    // Borrow exactly at available amount => succeeds
-    let borrow_exact = build_borrow(
-        &market,
-        &borrower.pubkey(),
-        &borrower_token.pubkey(),
-        &blacklist_program.pubkey(),
-        available,
-    );
-    let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
-    let tx = Transaction::new_signed_with_payer(
-        &[borrow_exact],
-        Some(&ctx.payer.pubkey()),
-        &[&ctx.payer, &borrower],
-        recent,
-    );
     ctx.banks_client
         .process_transaction(tx)
         .await
-        .expect("Borrow at exact available (vault - fees) should succeed");
+        .expect("COAL-L02: borrow at full vault balance should succeed despite accrued fees");
 
-    // Verify borrower received exactly the available amount
-    let borrower_balance_after = get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
+    // Verify borrower received the full vault balance
+    let borrower_balance = get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
     assert_eq!(
-        borrower_balance_after, available,
-        "Borrower should receive exactly the available amount"
+        borrower_balance, vault_balance,
+        "Borrower should receive full vault balance"
     );
 
-    // Verify market state after successful borrow
+    // Verify fees are still accrued (they're virtual, not reserved from borrowable)
     let market_data = get_account_data(&mut ctx, &market).await;
     let parsed_after = parse_market(&market_data);
-    assert_eq!(
-        parsed_after.total_borrowed, available,
-        "total_borrowed should equal the borrowed amount"
+    assert!(
+        parsed_after.accrued_protocol_fees > 0,
+        "Fees should be accrued but not reserved from borrowable"
     );
 
-    // Now try to borrow 1 more base unit => should fail (only fees left in vault)
+    // Now vault is empty — try to borrow 1 more => should fail
     let borrow_one_more = build_borrow(
         &market,
         &borrower.pubkey(),

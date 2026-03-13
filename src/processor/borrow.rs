@@ -16,6 +16,9 @@ use crate::state::{BorrowerWhitelist, Market, ProtocolConfig};
 
 /// Borrow (disc 6)
 /// Borrower withdraws USDC from the market vault.
+///
+/// Note: Borrowable liquidity is the full vault balance. Protocol fees are
+/// enforced at settlement time (collect_fees distress guard), not pre-maturity.
 pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> ProgramResult {
     if accounts.len() < 9 {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -117,7 +120,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     // Step 1: Accrue interest
     accrue_interest(market, config, current_ts)?;
 
-    // Step 2: Compute borrowable (fee reservation)
+    // Step 2: Compute borrowable
     // Read vault balance
     // SR-117: Verify vault account is owned by token program before unsafe deserialization
     if unsafe { vault_account.owner() } != &pinocchio_token::ID {
@@ -131,14 +134,14 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     if *vault_token.mint().as_ref() != market.mint {
         return Err(LendingError::InvalidMint.into());
     }
+    // COAL-L02: Use full vault balance as borrowable amount.
+    // accrued_protocol_fees are virtual pre-maturity — collect_fees blocks
+    // extraction while lenders have deposits (SR-113), so reserving them
+    // here only suppresses borrowable liquidity with no benefit.
     let vault_balance = vault_token.amount();
-    let fees_reserved = core::cmp::min(vault_balance, market.accrued_protocol_fees());
-    let borrowable = vault_balance
-        .checked_sub(fees_reserved)
-        .ok_or(LendingError::MathOverflow)?;
 
-    // Step 3: Validate amount <= borrowable
-    if amount > borrowable {
+    // Step 3: Validate amount <= vault balance
+    if amount > vault_balance {
         return Err(LendingError::BorrowAmountTooHigh.into());
     }
 
