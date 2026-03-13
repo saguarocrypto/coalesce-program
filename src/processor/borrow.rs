@@ -169,6 +169,13 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(ProgramError::InvalidAccountData);
     }
 
+    // COAL-I02: Check is_whitelisted flag explicitly.
+    // Without this, a de-whitelisted borrower with residual max_borrow_capacity
+    // could still borrow, inconsistent with create_market.rs which checks the flag.
+    if wl.is_whitelisted != 1 {
+        return Err(LendingError::NotWhitelisted.into());
+    }
+
     let new_wl_borrowed = wl
         .current_borrowed()
         .checked_add(amount)

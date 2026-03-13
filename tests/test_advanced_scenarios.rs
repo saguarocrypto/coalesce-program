@@ -1406,10 +1406,9 @@ async fn test_create_market_interest_rate_exceeds_max() {
 // ---------------------------------------------------------------------------
 
 /// Whitelist a borrower, create a market, then de-whitelist the borrower
-/// (is_whitelisted=0). Borrowing should still succeed because the borrow
-/// processor does not re-check whitelist status — only market.borrower match.
+/// (is_whitelisted=0). Borrowing should fail with NotWhitelisted (COAL-I02).
 #[tokio::test]
-async fn test_borrow_succeeds_after_dewhitelist() {
+async fn test_borrow_fails_after_dewhitelist() {
     let mut ctx = common::start_context().await;
 
     let admin = Keypair::new();
@@ -1504,63 +1503,18 @@ async fn test_borrow_succeeds_after_dewhitelist() {
     assert_eq!(wl.max_borrow_capacity, 100 * USDC);
     assert_eq!(wl.current_borrowed, 0);
 
-    // Borrow should still succeed after de-whitelist (borrower match still valid).
-    // x-1 boundary for 100 USDC capacity.
-    let borrow_ix = build_borrow(
-        &market,
-        &borrower.pubkey(),
-        &borrower_token.pubkey(),
-        &blacklist_program.pubkey(),
-        99 * USDC,
-    );
-    let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
-    let tx = Transaction::new_signed_with_payer(
-        &[borrow_ix],
-        Some(&ctx.payer.pubkey()),
-        &[&ctx.payer, &borrower],
-        recent,
-    );
-    ctx.banks_client.process_transaction(tx).await.unwrap();
-
-    // x boundary.
-    let borrow_ix = build_borrow(
-        &market,
-        &borrower.pubkey(),
-        &borrower_token.pubkey(),
-        &blacklist_program.pubkey(),
-        1 * USDC,
-    );
-    let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
-    let tx = Transaction::new_signed_with_payer(
-        &[borrow_ix],
-        Some(&ctx.payer.pubkey()),
-        &[&ctx.payer, &borrower],
-        recent,
-    );
-    ctx.banks_client
-        .process_transaction(tx)
-        .await
-        .expect("borrow should succeed even after de-whitelisting");
-
-    let wl_data = get_account_data(&mut ctx, &wl_pda).await;
-    let wl = parse_borrower_whitelist(&wl_data);
-    assert_eq!(wl.current_borrowed, 100 * USDC);
-    assert_eq!(
-        get_token_balance(&mut ctx, &borrower_token.pubkey()).await,
-        100 * USDC
-    );
-
-    // x+1 boundary should fail with global capacity even while de-whitelisted.
-    let wl_before_fail = get_account_data(&mut ctx, &wl_pda).await;
-    let borrower_before_fail = get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
-    let snapshot_before_fail =
+    // COAL-I02: Borrow should fail after de-whitelist with NotWhitelisted.
+    let wl_before = get_account_data(&mut ctx, &wl_pda).await;
+    let borrower_before = get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
+    let snapshot_before =
         ProtocolSnapshot::capture(&mut ctx, &market, &vault, &[lender_pos]).await;
+
     let borrow_ix = build_borrow(
         &market,
         &borrower.pubkey(),
         &borrower_token.pubkey(),
         &blacklist_program.pubkey(),
-        1,
+        50 * USDC,
     );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
@@ -1574,14 +1528,16 @@ async fn test_borrow_succeeds_after_dewhitelist() {
         .process_transaction(tx)
         .await
         .map_err(|e| e.unwrap());
-    assert_custom_error(&result, 27); // GlobalCapacityExceeded
-    let snapshot_after_fail =
+    assert_custom_error(&result, 6); // NotWhitelisted
+
+    // Verify no state changes
+    let snapshot_after =
         ProtocolSnapshot::capture(&mut ctx, &market, &vault, &[lender_pos]).await;
-    snapshot_before_fail.assert_unchanged(&snapshot_after_fail);
-    assert_eq!(get_account_data(&mut ctx, &wl_pda).await, wl_before_fail);
+    snapshot_before.assert_unchanged(&snapshot_after);
+    assert_eq!(get_account_data(&mut ctx, &wl_pda).await, wl_before);
     assert_eq!(
         get_token_balance(&mut ctx, &borrower_token.pubkey()).await,
-        borrower_before_fail
+        borrower_before
     );
 }
 
