@@ -314,6 +314,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         .ok_or(LendingError::MathOverflow)?;
     market.set_scaled_total_supply(new_scaled_total);
 
+    // COAL-M01 fix 2: decrement total_deposited so cap space is freed for future deposits.
+    // Uses saturating_sub because payout may include accrued interest exceeding original deposit.
+    let new_total_deposited = market.total_deposited().saturating_sub(payout);
+    market.set_total_deposited(new_total_deposited);
+
     log!(
         "evt:withdraw market={} lender={} payout={} scaled={}",
         crate::logic::events::short_hex(market_account.address().as_ref()),

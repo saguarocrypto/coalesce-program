@@ -133,20 +133,22 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(LendingError::ZeroScaledAmount.into());
     }
 
-    // Step 4: Validate cap
+    // Step 3: Validate cap on raw principal (not interest-inflated value).
+    // Finding 4: Using scaled_total_supply * scale_factor included accrued
+    // interest, which meant the effective deposit cap shrank over time.
+    let new_total_deposited = market
+        .total_deposited()
+        .checked_add(amount)
+        .ok_or(LendingError::MathOverflow)?;
+    let max_supply = market.max_total_supply();
+    if new_total_deposited > max_supply {
+        return Err(LendingError::CapExceeded.into());
+    }
+
     let new_scaled_total = market
         .scaled_total_supply()
         .checked_add(scaled_amount)
         .ok_or(LendingError::MathOverflow)?;
-    let new_normalized = new_scaled_total
-        .checked_mul(scale_factor)
-        .ok_or(LendingError::MathOverflow)?
-        .checked_div(WAD)
-        .ok_or(LendingError::MathOverflow)?;
-    let max_supply_u128 = u128::from(market.max_total_supply());
-    if new_normalized > max_supply_u128 {
-        return Err(LendingError::CapExceeded.into());
-    }
 
     // H-03: Verify token account ownership before transfer
     // SAFETY: Token account data is validated by the SPL Token program which owns it.
@@ -250,10 +252,6 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
 
     // Step 7: Update market
     market.set_scaled_total_supply(new_scaled_total);
-    let new_total_deposited = market
-        .total_deposited()
-        .checked_add(amount)
-        .ok_or(LendingError::MathOverflow)?;
     market.set_total_deposited(new_total_deposited);
 
     log!(
