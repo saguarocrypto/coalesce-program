@@ -12,7 +12,7 @@ use crate::logic::validation::{
 };
 use crate::state::{BorrowerWhitelist, Market, ProtocolConfig};
 
-/// Repay (disc 7)
+/// Repay (disc 5)
 /// Repay USDC to the market vault. Anyone may call.
 /// Updates the borrower's current_borrowed to allow re-borrowing after repayment.
 pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> ProgramResult {

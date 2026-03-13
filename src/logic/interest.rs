@@ -12,6 +12,19 @@
 //!
 //! Protocol fees are computed as a fraction of each interest delta and tracked
 //! separately in `accrued_protocol_fees`.
+//!
+//! ## Compounding granularity (Finding 11)
+//!
+//! The effective APY depends on how frequently `accrue_interest` is called:
+//! - Called once per year: APY ≈ APR (no compounding benefit)
+//! - Called daily: daily compounding, APY > APR
+//! - Called every second: approaches continuous compounding
+//!
+//! This is a known property of the model, not a bug. The sub-day linear
+//! interpolation ensures that the result is independent of call frequency
+//! within a single day, but cross-day compounding depends on actual accrual
+//! cadence. In practice, any user interaction (deposit, borrow, repay, etc.)
+//! triggers accrual, so active markets compound frequently.
 
 use crate::constants::{BPS, SECONDS_PER_YEAR, WAD};
 use crate::error::LendingError;

@@ -11,7 +11,7 @@ use crate::logic::validation::{
 };
 use crate::state::{Market, ProtocolConfig};
 
-/// WithdrawExcess (disc 18)
+/// WithdrawExcess (disc 11)
 /// Allows the borrower to withdraw excess funds from the vault after:
 /// - Market has matured
 /// - All lenders have fully withdrawn (scaled_total_supply == 0)

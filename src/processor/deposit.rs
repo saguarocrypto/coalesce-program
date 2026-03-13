@@ -12,7 +12,7 @@ use crate::logic::validation::{
 };
 use crate::state::{LenderPosition, Market, ProtocolConfig};
 
-/// Deposit (disc 5)
+/// Deposit (disc 3)
 /// Lender deposits USDC into a market vault, receiving scaled balance.
 pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> ProgramResult {
     if accounts.len() < 10 {

@@ -11,7 +11,7 @@ use crate::logic::validation::{
 };
 use crate::state::{Market, ProtocolConfig};
 
-/// CollectFees (disc 9)
+/// CollectFees (disc 8)
 /// Fee authority withdraws accrued protocol fees from a market vault.
 pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> ProgramResult {
     let _ = data; // No instruction data beyond discriminator

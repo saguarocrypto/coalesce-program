@@ -14,7 +14,7 @@ use crate::logic::validation::{
 };
 use crate::state::{BorrowerWhitelist, Market, ProtocolConfig};
 
-/// Borrow (disc 6)
+/// Borrow (disc 4)
 /// Borrower withdraws USDC from the market vault.
 ///
 /// Note: Borrowable liquidity is the full vault balance. Protocol fees are

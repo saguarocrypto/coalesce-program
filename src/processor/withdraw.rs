@@ -14,7 +14,7 @@ use crate::logic::validation::{
 };
 use crate::state::{LenderPosition, Market, ProtocolConfig};
 
-/// Withdraw (disc 8)
+/// Withdraw (disc 7)
 /// Lender withdraws their proportional share of USDC after maturity.
 pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> ProgramResult {
     if accounts.len() < 9 {
