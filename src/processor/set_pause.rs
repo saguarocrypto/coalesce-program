@@ -34,22 +34,24 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     }
 
     // Read current config to validate admin
-    // SAFETY: Read-only borrow. Account data length is verified by bytemuck::try_from_bytes.
-    let config_data = unsafe { protocol_config_account.borrow_unchecked() };
-    let config_ref: &ProtocolConfig =
-        bytemuck::try_from_bytes(config_data).map_err(|_| ProgramError::InvalidAccountData)?;
+    {
+        // SAFETY: Read-only borrow. Account data length is verified by bytemuck::try_from_bytes.
+        let config_data = unsafe { protocol_config_account.borrow_unchecked() };
+        let config_ref: &ProtocolConfig =
+            bytemuck::try_from_bytes(config_data).map_err(|_| ProgramError::InvalidAccountData)?;
 
-    // Discriminator check for ProtocolConfig
-    if config_ref.discriminator != DISC_PROTOCOL_CONFIG {
-        return Err(ProgramError::InvalidAccountData);
-    }
+        // Discriminator check for ProtocolConfig
+        if config_ref.discriminator != DISC_PROTOCOL_CONFIG {
+            return Err(ProgramError::InvalidAccountData);
+        }
 
-    // Admin must match and be signer
-    if config_ref.admin != *admin.address().as_ref() {
-        return Err(LendingError::Unauthorized.into());
-    }
-    if !admin.is_signer() {
-        return Err(LendingError::Unauthorized.into());
+        // Admin must match and be signer
+        if config_ref.admin != *admin.address().as_ref() {
+            return Err(LendingError::Unauthorized.into());
+        }
+        if !admin.is_signer() {
+            return Err(LendingError::Unauthorized.into());
+        }
     }
 
     // Mutably update config

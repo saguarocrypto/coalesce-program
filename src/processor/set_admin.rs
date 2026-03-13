@@ -29,27 +29,29 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
     }
 
     // Read current config to validate admin
-    // SAFETY: Read-only borrow. Account data length is verified by bytemuck::try_from_bytes.
-    let config_data = unsafe { protocol_config_account.borrow_unchecked() };
-    let config_ref: &ProtocolConfig =
-        bytemuck::try_from_bytes(config_data).map_err(|_| ProgramError::InvalidAccountData)?;
+    {
+        // SAFETY: Read-only borrow. Account data length is verified by bytemuck::try_from_bytes.
+        let config_data = unsafe { protocol_config_account.borrow_unchecked() };
+        let config_ref: &ProtocolConfig =
+            bytemuck::try_from_bytes(config_data).map_err(|_| ProgramError::InvalidAccountData)?;
 
-    // Discriminator check for ProtocolConfig
-    if config_ref.discriminator != DISC_PROTOCOL_CONFIG {
-        return Err(ProgramError::InvalidAccountData);
-    }
+        // Discriminator check for ProtocolConfig
+        if config_ref.discriminator != DISC_PROTOCOL_CONFIG {
+            return Err(ProgramError::InvalidAccountData);
+        }
 
-    // Current admin must match and be signer
-    if config_ref.admin != *current_admin.address().as_ref() {
-        return Err(LendingError::Unauthorized.into());
-    }
-    if !current_admin.is_signer() {
-        return Err(LendingError::Unauthorized.into());
-    }
+        // Current admin must match and be signer
+        if config_ref.admin != *current_admin.address().as_ref() {
+            return Err(LendingError::Unauthorized.into());
+        }
+        if !current_admin.is_signer() {
+            return Err(LendingError::Unauthorized.into());
+        }
 
-    // New admin must not be zero address
-    if new_admin.address().as_ref() == ZERO_ADDRESS {
-        return Err(LendingError::InvalidAddress.into());
+        // New admin must not be zero address
+        if new_admin.address().as_ref() == ZERO_ADDRESS {
+            return Err(LendingError::InvalidAddress.into());
+        }
     }
 
     // Mutably update config
