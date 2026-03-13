@@ -169,8 +169,10 @@ fn clamp_settlement(raw: u128) -> u128 {
     }
 }
 
-fn fee_reservation(vault_balance: u128, accrued_fees: u128) -> u128 {
-    std::cmp::min(vault_balance, accrued_fees)
+/// After COAL-C01: no fee reservation; available = vault_balance directly.
+/// Fee reservation is always zero.
+fn fee_reservation(_vault_balance: u128, _accrued_fees: u128) -> u128 {
+    0
 }
 
 // ---------------------------------------------------------------------------
@@ -764,58 +766,49 @@ fn settlement_factor_rounding_down() {
 
 #[test]
 fn fee_reservation_reduces_available() {
-    // Test the fee reservation logic from re_settle.rs
+    // After COAL-C01: no fee reservation; available = vault_balance directly.
     let vault_balance: u128 = 1_000_000_000_000; // $1M
     let accrued_fees: u128 = 100_000_000_000; // $100K fees
 
     for fees in [accrued_fees - 1, accrued_fees, accrued_fees + 1] {
         let fees_reserved = fee_reservation(vault_balance, fees);
         let available_for_lenders = vault_balance - fees_reserved;
-        assert_eq!(fees_reserved, std::cmp::min(vault_balance, fees));
-        assert_eq!(
-            available_for_lenders + fees_reserved,
-            vault_balance,
-            "vault conservation should hold"
-        );
+        assert_eq!(fees_reserved, 0);
+        assert_eq!(available_for_lenders, vault_balance);
     }
 
     let fees_reserved = fee_reservation(vault_balance, accrued_fees);
     let available_for_lenders = vault_balance - fees_reserved;
-    assert_eq!(fees_reserved, accrued_fees);
-    assert_eq!(available_for_lenders, 900_000_000_000);
-
-    let factor_without_fees = assert_settlement_matches_onchain(vault_balance, vault_balance);
-    let factor_with_fees = assert_settlement_matches_onchain(available_for_lenders, vault_balance);
-    assert!(factor_with_fees < factor_without_fees);
+    assert_eq!(fees_reserved, 0);
+    assert_eq!(available_for_lenders, vault_balance);
 }
 
 #[test]
 fn fee_reservation_caps_at_vault_balance() {
-    // When fees > vault_balance, fees_reserved = vault_balance
+    // After COAL-C01: no fee reservation; available = vault_balance directly.
     let vault_balance: u128 = 100_000_000_000; // $100K
     let accrued_fees: u128 = 500_000_000_000; // $500K fees (underwater)
 
     let fees_reserved = fee_reservation(vault_balance, accrued_fees);
-    assert_eq!(fees_reserved, vault_balance);
+    assert_eq!(fees_reserved, 0);
 
     let available_for_lenders = vault_balance - fees_reserved;
-    assert_eq!(available_for_lenders, 0); // Nothing left for lenders
+    assert_eq!(available_for_lenders, vault_balance);
 
     let fees_reserved_minus = fee_reservation(vault_balance, accrued_fees - 1);
     let fees_reserved_plus = fee_reservation(vault_balance, accrued_fees + 1);
-    assert!(fees_reserved_minus <= vault_balance);
-    assert_eq!(fees_reserved_plus, vault_balance);
+    assert_eq!(fees_reserved_minus, 0);
+    assert_eq!(fees_reserved_plus, 0);
 
+    // With full vault available, settlement factor reflects full vault
     let factor = assert_settlement_matches_onchain(available_for_lenders, vault_balance);
-    assert_eq!(
-        factor, 1,
-        "when available=0 and normalized>0, factor should clamp to 1"
-    );
+    assert!(factor > 0, "factor should be positive when vault > 0");
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(1000))]
 
+    /// After COAL-C01: fee reservation is always zero; available = vault_balance.
     #[test]
     fn prop_fee_reservation_never_exceeds_vault(
         vault_balance in edge_u128_strategy(10_000_000_000_000u128),
@@ -823,45 +816,15 @@ proptest! {
     ) {
         let fees_reserved = fee_reservation(vault_balance, accrued_fees);
 
-        prop_assert!(
-            fees_reserved <= vault_balance,
-            "fees_reserved ({}) should not exceed vault_balance ({})",
-            fees_reserved, vault_balance
-        );
         prop_assert_eq!(
-            fees_reserved,
-            std::cmp::min(vault_balance, accrued_fees),
-            "fees_reserved should equal min(vault_balance, accrued_fees)"
+            fees_reserved, 0,
+            "fees_reserved should always be 0 (no fee reservation)"
         );
 
         let available = vault_balance.saturating_sub(fees_reserved);
-        prop_assert!(
-            available <= vault_balance,
-            "available ({}) should not exceed vault_balance ({})",
-            available, vault_balance
-        );
         prop_assert_eq!(
-            available + fees_reserved,
-            vault_balance,
-            "vault conservation invariant failed"
+            available, vault_balance,
+            "available should equal vault_balance"
         );
-
-        if accrued_fees >= vault_balance {
-            prop_assert_eq!(fees_reserved, vault_balance);
-            prop_assert_eq!(available, 0);
-        }
-        if accrued_fees == 0 {
-            prop_assert_eq!(fees_reserved, 0);
-            prop_assert_eq!(available, vault_balance);
-        }
-
-        if accrued_fees < u128::MAX {
-            let next_reserved = fee_reservation(vault_balance, accrued_fees + 1);
-            prop_assert!(
-                next_reserved >= fees_reserved,
-                "reservation should be monotonic in accrued fees"
-            );
-            prop_assert!(next_reserved <= vault_balance);
-        }
     }
 }

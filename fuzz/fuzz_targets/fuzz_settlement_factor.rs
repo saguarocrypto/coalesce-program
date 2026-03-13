@@ -10,7 +10,6 @@ use coalesce::constants::WAD;
 #[derive(Debug, Arbitrary)]
 struct Input {
     vault_balance: u64,
-    accrued_fees: u64,
     scaled_total_supply_hi: u64,
     scaled_total_supply_lo: u64,
     scale_factor_hi: u64,
@@ -19,7 +18,6 @@ struct Input {
 
 fuzz_target!(|input: Input| {
     let vault_balance = input.vault_balance as u128;
-    let accrued_fees = input.accrued_fees as u128;
     let scaled_total_supply =
         ((input.scaled_total_supply_hi as u128) << 64) | (input.scaled_total_supply_lo as u128);
     let scale_factor =
@@ -29,16 +27,8 @@ fuzz_target!(|input: Input| {
         return;
     }
 
-    // Fee reservation
-    let fees_reserved = if vault_balance < accrued_fees {
-        vault_balance
-    } else {
-        accrued_fees
-    };
-    let available = match vault_balance.checked_sub(fees_reserved) {
-        Some(a) => a,
-        None => return,
-    };
+    // COAL-C01: No fee reservation — full vault balance is available for settlement.
+    let available = vault_balance;
 
     // Total normalized
     let total_normalized = match scaled_total_supply

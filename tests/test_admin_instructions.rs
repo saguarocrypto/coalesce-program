@@ -2876,7 +2876,12 @@ async fn test_withdraw_excess_fails_when_paused() {
     ctx.last_blockhash = ctx.banks_client.get_latest_blockhash().await.unwrap();
 
     // Try to withdraw_excess while paused
-    let excess_ix = build_withdraw_excess(&market, &borrower.pubkey(), &borrower_token.pubkey());
+    let excess_ix = build_withdraw_excess(
+        &market,
+        &borrower.pubkey(),
+        &borrower_token.pubkey(),
+        &blacklist_program.pubkey(),
+    );
     let tx = Transaction::new_signed_with_payer(
         &[excess_ix],
         Some(&ctx.payer.pubkey()),

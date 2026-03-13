@@ -168,7 +168,6 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         .copy_from_slice(blacklist_program.address().as_ref());
     config.is_initialized = 1;
     config.bump = bump;
-
     log!(
         "evt:initialize_protocol admin={} fee_bps={}",
         crate::logic::events::short_hex(&config.admin),

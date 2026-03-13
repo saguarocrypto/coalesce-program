@@ -58,6 +58,7 @@ mod common;
 use solana_program_test::*;
 use solana_sdk::{
     instruction::InstructionError,
+    pubkey::Pubkey,
     signature::Keypair,
     signer::Signer,
     transaction::{Transaction, TransactionError},

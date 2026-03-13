@@ -1685,22 +1685,54 @@ async fn test_collect_fees_blocked_at_exact_funded_boundary() {
     .await;
 
     // Lender A and B each deposit 500 USDC (vault = 1000)
-    common::mint_to_account(&mut ctx, &mint, &lender_a_token.pubkey(), &mint_authority, deposit_amount).await;
+    common::mint_to_account(
+        &mut ctx,
+        &mint,
+        &lender_a_token.pubkey(),
+        &mint_authority,
+        deposit_amount,
+    )
+    .await;
     let deposit_ix_a = common::build_deposit(
-        &market, &lender_a.pubkey(), &lender_a_token.pubkey(), &mint,
-        &blacklist_program.pubkey(), deposit_amount,
+        &market,
+        &lender_a.pubkey(),
+        &lender_a_token.pubkey(),
+        &mint,
+        &blacklist_program.pubkey(),
+        deposit_amount,
     );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
-    let tx = Transaction::new_signed_with_payer(&[deposit_ix_a], Some(&ctx.payer.pubkey()), &[&ctx.payer, &lender_a], recent);
+    let tx = Transaction::new_signed_with_payer(
+        &[deposit_ix_a],
+        Some(&ctx.payer.pubkey()),
+        &[&ctx.payer, &lender_a],
+        recent,
+    );
     ctx.banks_client.process_transaction(tx).await.unwrap();
 
-    common::mint_to_account(&mut ctx, &mint, &lender_b_token.pubkey(), &mint_authority, deposit_amount).await;
+    common::mint_to_account(
+        &mut ctx,
+        &mint,
+        &lender_b_token.pubkey(),
+        &mint_authority,
+        deposit_amount,
+    )
+    .await;
     let deposit_ix_b = common::build_deposit(
-        &market, &lender_b.pubkey(), &lender_b_token.pubkey(), &mint,
-        &blacklist_program.pubkey(), deposit_amount,
+        &market,
+        &lender_b.pubkey(),
+        &lender_b_token.pubkey(),
+        &mint,
+        &blacklist_program.pubkey(),
+        deposit_amount,
     );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
-    let tx = Transaction::new_signed_with_payer(&[deposit_ix_b], Some(&ctx.payer.pubkey()), &[&ctx.payer, &lender_b], recent);
+    let tx = Transaction::new_signed_with_payer(
+        &[deposit_ix_b],
+        Some(&ctx.payer.pubkey()),
+        &[&ctx.payer, &lender_b],
+        recent,
+    );
     ctx.banks_client.process_transaction(tx).await.unwrap();
 
     // Advance past maturity + grace
@@ -1708,12 +1740,27 @@ async fn test_collect_fees_blocked_at_exact_funded_boundary() {
 
     // Trigger interest accrual by repaying 1 unit of interest, then read state
     // to learn the exact deficit = normalized_claims - vault_balance
-    common::mint_to_account(&mut ctx, &mint, &borrower_token.pubkey(), &mint_authority, 1).await;
+    common::mint_to_account(
+        &mut ctx,
+        &mint,
+        &borrower_token.pubkey(),
+        &mint_authority,
+        1,
+    )
+    .await;
     let ri = common::build_repay_interest_with_amount(
-        &market, &borrower.pubkey(), &borrower_token.pubkey(), 1,
+        &market,
+        &borrower.pubkey(),
+        &borrower_token.pubkey(),
+        1,
     );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
-    let tx = Transaction::new_signed_with_payer(&[ri], Some(&ctx.payer.pubkey()), &[&ctx.payer, &borrower], recent);
+    let tx = Transaction::new_signed_with_payer(
+        &[ri],
+        Some(&ctx.payer.pubkey()),
+        &[&ctx.payer, &borrower],
+        recent,
+    );
     ctx.banks_client.process_transaction(tx).await.unwrap();
 
     // Read market state to compute exact deficit
@@ -1721,8 +1768,10 @@ async fn test_collect_fees_blocked_at_exact_funded_boundary() {
     let scale_factor = read_u128(&market_data, 148);
     let scaled_supply = read_u128(&market_data, 132);
     let total_normalized = scaled_supply
-        .checked_mul(scale_factor).unwrap()
-        .checked_div(WAD).unwrap();
+        .checked_mul(scale_factor)
+        .unwrap()
+        .checked_div(WAD)
+        .unwrap();
     let total_normalized_u64 = u64::try_from(total_normalized).unwrap();
 
     let (vault, _) = common::get_vault_pda(&market);
@@ -1732,22 +1781,46 @@ async fn test_collect_fees_blocked_at_exact_funded_boundary() {
     // This makes sf = vault/claims = WAD on first settlement
     if total_normalized_u64 > vault_bal {
         let deficit = total_normalized_u64 - vault_bal;
-        common::mint_to_account(&mut ctx, &mint, &borrower_token.pubkey(), &mint_authority, deficit).await;
+        common::mint_to_account(
+            &mut ctx,
+            &mint,
+            &borrower_token.pubkey(),
+            &mint_authority,
+            deficit,
+        )
+        .await;
         let ri2 = common::build_repay_interest_with_amount(
-            &market, &borrower.pubkey(), &borrower_token.pubkey(), deficit,
+            &market,
+            &borrower.pubkey(),
+            &borrower_token.pubkey(),
+            deficit,
         );
         let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
-        let tx = Transaction::new_signed_with_payer(&[ri2], Some(&ctx.payer.pubkey()), &[&ctx.payer, &borrower], recent);
+        let tx = Transaction::new_signed_with_payer(
+            &[ri2],
+            Some(&ctx.payer.pubkey()),
+            &[&ctx.payer, &borrower],
+            recent,
+        );
         ctx.banks_client.process_transaction(tx).await.unwrap();
     }
 
     // Lender A withdraws → triggers settlement with sf = WAD
     let withdraw_ix_a = common::build_withdraw(
-        &market, &lender_a.pubkey(), &lender_a_token.pubkey(),
-        &blacklist_program.pubkey(), 0u128, 0,
+        &market,
+        &lender_a.pubkey(),
+        &lender_a_token.pubkey(),
+        &blacklist_program.pubkey(),
+        0u128,
+        0,
     );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
-    let tx = Transaction::new_signed_with_payer(&[withdraw_ix_a], Some(&ctx.payer.pubkey()), &[&ctx.payer, &lender_a], recent);
+    let tx = Transaction::new_signed_with_payer(
+        &[withdraw_ix_a],
+        Some(&ctx.payer.pubkey()),
+        &[&ctx.payer, &lender_a],
+        recent,
+    );
     ctx.banks_client.process_transaction(tx).await.unwrap();
 
     // Verify preconditions: sf == WAD, supply > 0, fees > 0
@@ -1757,26 +1830,33 @@ async fn test_collect_fees_blocked_at_exact_funded_boundary() {
     let accrued_fees = read_u64(&market_data, MARKET_ACCRUED_PROTOCOL_FEES_OFFSET);
 
     assert_eq!(settlement_factor, WAD, "precondition: sf must be WAD");
-    assert!(scaled_supply > 0, "precondition: lender B still has position");
+    assert!(
+        scaled_supply > 0,
+        "precondition: lender B still has position"
+    );
     assert!(accrued_fees > 0, "precondition: fees must be accrued");
 
     // Verify vault <= lender B's claims (no surplus for fees)
     let vault_bal = common::get_token_balance(&mut ctx, &vault).await;
     let scale_factor = read_u128(&market_data, 148);
     let lender_claims = scaled_supply
-        .checked_mul(scale_factor).unwrap()
-        .checked_div(WAD).unwrap();
+        .checked_mul(scale_factor)
+        .unwrap()
+        .checked_div(WAD)
+        .unwrap();
     let lender_claims_u64 = u64::try_from(lender_claims).unwrap();
     assert!(
         vault_bal <= lender_claims_u64,
         "vault ({}) must be <= lender claims ({}) at this boundary",
-        vault_bal, lender_claims_u64
+        vault_bal,
+        lender_claims_u64
     );
 
     // Attempt collect_fees — must FAIL with NoFeesToCollect (Custom(36))
     // because the COAL-C01 lender-claims cap zeros out withdrawable
     let fee_dest = common::create_token_account(&mut ctx, &mint, &fee_authority.pubkey()).await;
-    let collect_ix = common::build_collect_fees(&market, &fee_authority.pubkey(), &fee_dest.pubkey());
+    let collect_ix =
+        common::build_collect_fees(&market, &fee_authority.pubkey(), &fee_dest.pubkey());
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
         &[collect_ix],
@@ -1802,8 +1882,12 @@ async fn test_collect_fees_blocked_at_exact_funded_boundary() {
 
     // Lender B can still withdraw their full claim (proves vault is intact)
     let withdraw_ix_b = common::build_withdraw(
-        &market, &lender_b.pubkey(), &lender_b_token.pubkey(),
-        &blacklist_program.pubkey(), 0u128, 0,
+        &market,
+        &lender_b.pubkey(),
+        &lender_b_token.pubkey(),
+        &blacklist_program.pubkey(),
+        0u128,
+        0,
     );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
@@ -1818,6 +1902,7 @@ async fn test_collect_fees_blocked_at_exact_funded_boundary() {
     assert!(
         lender_b_balance >= deposit_amount,
         "Lender B must receive at least deposit ({}): got {}",
-        deposit_amount, lender_b_balance
+        deposit_amount,
+        lender_b_balance
     );
 }

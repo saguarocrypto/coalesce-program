@@ -178,14 +178,9 @@ fuzz_target!(|input: Input| {
                     continue;
                 }
 
-                // Fee reservation: borrowable = vault - min(vault, accrued_fees)
-                let fees_reserved = core::cmp::min(vault_balance, market.accrued_protocol_fees());
-                let borrowable = match vault_balance.checked_sub(fees_reserved) {
-                    Some(v) => v,
-                    None => continue,
-                };
-
-                if amount_u64 > borrowable {
+                // COAL-C01: Full vault balance is borrowable (no fee reservation).
+                // Fees are enforced at settlement via collect_fees distress guard.
+                if amount_u64 > vault_balance {
                     continue; // BorrowAmountTooHigh — skip
                 }
 
@@ -281,17 +276,8 @@ fuzz_target!(|input: Input| {
 
                 // Compute or use settlement factor.
                 if market.settlement_factor_wad() == 0 {
-                    let vault_u128 = vault_balance as u128;
-                    let fees_u128 = market.accrued_protocol_fees() as u128;
-                    let fees_reserved = if vault_u128 < fees_u128 {
-                        vault_u128
-                    } else {
-                        fees_u128
-                    };
-                    let available = match vault_u128.checked_sub(fees_reserved) {
-                        Some(v) => v,
-                        None => continue,
-                    };
+                    // COAL-C01: Settlement uses full vault balance (no fee reservation).
+                    let available = vault_balance as u128;
 
                     let total_normalized = match market
                         .scaled_total_supply()

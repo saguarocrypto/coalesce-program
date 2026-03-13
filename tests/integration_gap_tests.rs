@@ -1395,25 +1395,24 @@ async fn g4_1_resettle_improvement_and_rejection() {
         settlement_before
     );
 
-    // Hand-computed exact settlement_factor after re-settle:
-    // Vault now has: 500 (initial repay) + 300 (second repay) - 250 (half withdrawal payout) = 550
-    // Actually: deposit=1000, borrow=1000 (vault=0), repay=500 (vault=500),
-    // half withdrawal at 0.5 sf: payout = 500_000 * WAD/WAD * 0.5*WAD/WAD = 250_000 (250 USDC)
-    // vault after withdrawal = 500 - 250 = 250, then second repay of 300 => vault = 550
-    // Remaining scaled_total_supply = 500_000_000 (half of original 1B)
-    // nominal_liabilities = scaled_total_supply * sf / WAD = 500_000_000 * WAD/WAD = 500_000_000 (500 USDC)
-    // At 0% interest, sf=WAD, so new_settlement = min(vault_balance * WAD / nominal_liabilities, WAD)
-    // = min(550_000_000 * WAD / 500_000_000, WAD) = min(1.1 * WAD, WAD) = WAD
-    // Settlement capped at WAD since vault > liabilities.
-    // However the re-settle formula uses: vault_balance * WAD / nominal_liabilities
-    // With 0% interest, sf=WAD. After half withdrawal of 500_000_000 scaled at 0.5 sf:
-    // payout = 500_000_000 * WAD/WAD * (WAD/2)/WAD = 250_000_000 (250 USDC)
-    // vault after = 500*USDC - 250*USDC = 250*USDC, then +300*USDC = 550*USDC
-    // remaining scaled = 500_000_000, nominal = 500_000_000 * WAD / WAD = 500_000_000
-    // new_sf = min(550_000_000 * WAD / 500_000_000, WAD) = min(1.1*WAD, WAD) = WAD
-    assert_eq!(
-        settlement_after, WAD,
-        "Re-settle factor should be exactly WAD (vault covers full liabilities)"
+    // COAL-H01: haircut accumulator prevents recycled inflation.
+    // Deposit=1000, borrow=1000, repay=500, vault=500.
+    // Half withdrawal at sf=0.5: payout=250, entitled=500, gap=250.
+    // haircut_accumulator=250. Second repay of 300 => vault=550.
+    // re_settle: available = vault(550) - haircut(250) = 300.
+    // remaining scaled=500M, nominal≈500M (≈0% interest).
+    // new_sf ≈ 300M * WAD / 500M = 0.6*WAD.
+    // Without H01, sf would reach WAD (recycling A's haircut to B).
+    assert!(
+        settlement_after > settlement_before,
+        "Re-settle should improve: {} > {}",
+        settlement_after,
+        settlement_before
+    );
+    assert!(
+        settlement_after < WAD,
+        "COAL-H01: haircut accumulator prevents factor from reaching WAD; got {}",
+        settlement_after
     );
 
     // Verify all market fields after re-settle
@@ -1421,10 +1420,11 @@ async fn g4_1_resettle_improvement_and_rejection() {
         parsed.scale_factor, WAD,
         "sf should remain WAD at 0% interest"
     );
+    // COAL-M01: total_deposited decremented by payout (250) during the half withdrawal.
     assert_eq!(
         parsed.total_deposited,
-        1_000 * USDC,
-        "total_deposited unchanged"
+        750 * USDC,
+        "total_deposited reduced by withdrawal payout"
     );
     assert_eq!(
         parsed.total_borrowed,

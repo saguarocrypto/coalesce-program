@@ -81,9 +81,10 @@ pub fn fee_delta_exact(
     let fee_delta_wad = interest_delta_wad * BigUint::from(u128::from(fee_rate_bps)) / &bps;
 
     // Use pre-accrual scale_factor_before (matches on-chain logic after Finding 10 fix)
-    let fee_normalized =
-        BigUint::from(scaled_total_supply) * BigUint::from(scale_factor_before) / &wad * fee_delta_wad
-            / &wad;
+    let fee_normalized = BigUint::from(scaled_total_supply) * BigUint::from(scale_factor_before)
+        / &wad
+        * fee_delta_wad
+        / &wad;
 
     u64::try_from(fee_normalized).expect("fee should fit in u64 for bounded tests")
 }

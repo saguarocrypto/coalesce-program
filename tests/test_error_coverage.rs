@@ -240,7 +240,12 @@ async fn test_error_33_settlement_not_complete() {
 
     // Try withdraw_excess: scaled_total_supply == 0 (passes check 2),
     // settlement_factor_wad == 0 → error 33 (SettlementNotComplete)
-    let we_ix = build_withdraw_excess(&s.market, &s.borrower.pubkey(), &s.borrower_ta);
+    let we_ix = build_withdraw_excess(
+        &s.market,
+        &s.borrower.pubkey(),
+        &s.borrower_ta,
+        &s.blacklist_program,
+    );
     send_expect_error(&mut ctx, we_ix, &[&s.borrower], 33).await;
 }
 
@@ -327,7 +332,12 @@ async fn test_error_39_fees_not_collected() {
     );
 
     // Try withdraw_excess BEFORE collecting fees → FeesNotCollected (39)
-    let we_ix = build_withdraw_excess(&s.market, &s.borrower.pubkey(), &s.borrower_ta);
+    let we_ix = build_withdraw_excess(
+        &s.market,
+        &s.borrower.pubkey(),
+        &s.borrower_ta,
+        &s.blacklist_program,
+    );
     send_expect_error(&mut ctx, we_ix, &[&s.borrower], 39).await;
 }
 
@@ -418,7 +428,7 @@ async fn test_error_40_no_excess_to_withdraw() {
 
     // No fees to collect (0% fee rate → accrued_protocol_fees == 0)
     // withdraw_excess — vault is empty → NoExcessToWithdraw (40)
-    let we_ix = build_withdraw_excess(&market, &borrower.pubkey(), &bta.pubkey());
+    let we_ix = build_withdraw_excess(&market, &borrower.pubkey(), &bta.pubkey(), &bp);
     send_expect_error(&mut ctx, we_ix, &[&borrower], 40).await;
 }
 

@@ -214,14 +214,17 @@ fn oracle_fee_delta_normalized(
     u64::try_from(fee_normalized).unwrap()
 }
 
-fn oracle_settlement_factor(total_normalized: u128, vault_balance: u64, accrued_fees: u64) -> u128 {
+fn oracle_settlement_factor(
+    total_normalized: u128,
+    vault_balance: u64,
+    _accrued_fees: u64,
+) -> u128 {
     if total_normalized == 0 {
         return WAD;
     }
     let vault_u128 = u128::from(vault_balance);
-    let fees_reserved = vault_u128.min(u128::from(accrued_fees));
-    let available = vault_u128.saturating_sub(fees_reserved);
-    let raw = available * WAD / total_normalized;
+    // COAL-C01: settlement factor uses full vault balance (no fee reservation)
+    let raw = vault_u128 * WAD / total_normalized;
     raw.min(WAD).max(1)
 }
 
@@ -296,9 +299,8 @@ fn simulate_borrow(
     if accrue_interest(market, config, current_ts).is_err() {
         return false;
     }
-    let fees_reserved = (*vault_balance).min(market.accrued_protocol_fees());
-    let borrowable = vault_balance.saturating_sub(fees_reserved);
-    if amount > borrowable {
+    // COAL-L02: borrow uses full vault balance (no fee reservation)
+    if amount > *vault_balance {
         return false;
     }
     market.set_total_borrowed(market.total_borrowed().saturating_add(amount));
@@ -328,9 +330,7 @@ fn simulate_withdraw(
     // Compute settlement factor if not set
     if market.settlement_factor_wad() == 0 {
         let vault_u128 = u128::from(*vault_balance);
-        let fees_u128 = u128::from(market.accrued_protocol_fees());
-        let fees_reserved = vault_u128.min(fees_u128);
-        let available = vault_u128.saturating_sub(fees_reserved);
+        // COAL-C01: settlement factor uses full vault balance (no fee reservation)
 
         let total_normalized = market
             .scaled_total_supply()
@@ -341,7 +341,7 @@ fn simulate_withdraw(
         let sf = if total_normalized == 0 {
             WAD
         } else {
-            let raw = available
+            let raw = vault_u128
                 .checked_mul(WAD)
                 .and_then(|v| v.checked_div(total_normalized))
                 .unwrap_or(0);
@@ -395,9 +395,12 @@ fn simulate_collect_fees(
     // COAL-C01: cap fee withdrawal above lender claims when supply > 0
     if market.scaled_total_supply() > 0 {
         let sf = market.scale_factor();
-        let total_norm = market.scaled_total_supply()
-            .checked_mul(sf).unwrap()
-            .checked_div(WAD).unwrap();
+        let total_norm = market
+            .scaled_total_supply()
+            .checked_mul(sf)
+            .unwrap()
+            .checked_div(WAD)
+            .unwrap();
         let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
         let safe_max = vault_balance.saturating_sub(lender_claims);
         collectible = collectible.min(safe_max);
@@ -1220,56 +1223,20 @@ fn chaos_concurrent_collect_fees_and_borrow() {
     assert_eq!(market.accrued_protocol_fees(), expected_fee_delta);
     assert_eq!(market.last_accrual_timestamp(), accrual_ts);
 
-    let fees_reserved = vault.min(market.accrued_protocol_fees());
-    let borrowable = vault.saturating_sub(fees_reserved);
-    assert!(
-        fees_reserved > 0,
-        "fees should reserve part of vault liquidity"
-    );
-    assert!(borrowable < vault, "borrowable must exclude reserved fees");
+    // COAL-L02: borrow uses full vault balance (no fee reservation)
+    let borrowable = vault;
 
-    // Full-vault borrow must fail and leave state unchanged.
-    let snap_before_overborrow = snapshot(&market);
-    let vault_before_overborrow = vault;
-    let full_borrow_ok = simulate_borrow(
-        &mut market,
-        &config,
-        vault_before_overborrow,
-        accrual_ts,
-        &mut vault,
-    );
-    assert!(
-        !full_borrow_ok,
-        "full-vault borrow should fail due fee reservation"
-    );
-    assert_eq!(snapshot(&market), snap_before_overborrow);
-    assert_eq!(vault, vault_before_overborrow);
-
-    // Borrowing exactly the borrowable amount must succeed.
+    // Borrowing exactly the full vault amount must succeed.
     let exact_borrow_ok = simulate_borrow(&mut market, &config, borrowable, accrual_ts, &mut vault);
     assert!(
         exact_borrow_ok,
-        "borrowing exactly borrowable amount should succeed"
+        "borrowing full vault balance should succeed"
     );
     assert_eq!(market.total_borrowed(), borrowable);
     assert_eq!(market.accrued_protocol_fees(), expected_fee_delta);
     assert_eq!(
-        vault, fees_reserved,
-        "remaining vault should equal reserved fees"
-    );
-
-    // Collecting fees after borrow should drain remaining reserved liquidity.
-    let (collected, collect_ok) =
-        simulate_collect_fees(&mut market, &config, accrual_ts, &mut vault);
-    assert!(collect_ok, "reserved fees should be collectible");
-    assert_eq!(collected, fees_reserved);
-    assert_eq!(
-        market.accrued_protocol_fees(),
-        expected_fee_delta.saturating_sub(collected)
-    );
-    assert_eq!(
         vault, 0,
-        "collecting reserved fees should drain residual vault"
+        "vault should be fully drained after borrowing entire balance"
     );
     assert_supply_matches_lenders(&market, &[lender]);
 }

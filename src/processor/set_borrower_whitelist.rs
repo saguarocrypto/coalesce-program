@@ -26,7 +26,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(ProgramError::InvalidInstructionData);
     }
     let is_whitelisted = data[0];
-    let max_borrow_capacity = u64::from_le_bytes(data[1..9].try_into().unwrap());
+    let max_borrow_capacity = u64::from_le_bytes(
+        data[1..9]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidInstructionData)?,
+    );
 
     // Verify protocol_config PDA
     let (expected_config_pda, _) =

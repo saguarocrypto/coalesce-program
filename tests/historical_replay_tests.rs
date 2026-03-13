@@ -457,13 +457,8 @@ impl ReplayEngine {
                 accrue_interest(&mut ms.market, &self.state.protocol_config, log.block_time)
                     .unwrap_or_else(|e| panic!("{ctx}: accrue failed: {e:?}"));
 
-                let fees_reserved =
-                    core::cmp::min(ms.vault_balance, ms.market.accrued_protocol_fees());
-                let borrowable = ms
-                    .vault_balance
-                    .checked_sub(fees_reserved)
-                    .expect("underflow");
-                assert!(*amount <= borrowable, "{ctx}: borrow > borrowable");
+                // COAL-L02: borrow uses full vault balance (no fee reservation)
+                assert!(*amount <= ms.vault_balance, "{ctx}: borrow > vault_balance");
 
                 let new_wl = ms
                     .borrower_total_borrowed
@@ -509,10 +504,8 @@ impl ReplayEngine {
                     .unwrap_or_else(|e| panic!("{ctx}: accrue failed: {e:?}"));
 
                 if ms.market.settlement_factor_wad() == 0 {
+                    // COAL-C01: settlement factor uses full vault balance (no fee reservation)
                     let vb128 = u128::from(ms.vault_balance);
-                    let fees128 = u128::from(ms.market.accrued_protocol_fees());
-                    let fees_reserved = core::cmp::min(vb128, fees128);
-                    let available = vb128.checked_sub(fees_reserved).expect("underflow");
                     let total_norm = ms
                         .market
                         .scaled_total_supply()
@@ -523,7 +516,7 @@ impl ReplayEngine {
                     let settlement_factor = if total_norm == 0 {
                         WAD
                     } else {
-                        let raw = available
+                        let raw = vb128
                             .checked_mul(WAD)
                             .expect("overflow")
                             .checked_div(total_norm)
@@ -602,10 +595,8 @@ impl ReplayEngine {
                 accrue_interest(&mut ms.market, &zero_config, log.block_time)
                     .unwrap_or_else(|e| panic!("{ctx}: accrue failed: {e:?}"));
 
+                // COAL-C01: settlement factor uses full vault balance (no fee reservation)
                 let vb128 = u128::from(ms.vault_balance);
-                let fees128 = u128::from(ms.market.accrued_protocol_fees());
-                let fees_reserved = core::cmp::min(vb128, fees128);
-                let available = vb128.checked_sub(fees_reserved).expect("underflow");
                 let total_norm = ms
                     .market
                     .scaled_total_supply()
@@ -616,7 +607,7 @@ impl ReplayEngine {
                 let new_factor = if total_norm == 0 {
                     WAD
                 } else {
-                    let raw = available
+                    let raw = vb128
                         .checked_mul(WAD)
                         .expect("overflow")
                         .checked_div(total_norm)
@@ -699,13 +690,12 @@ fn scaled_amount_exact(amount: u64, scale_factor: u128) -> u128 {
 
 fn settlement_factor_exact(
     vault_balance: u64,
-    accrued_fees: u64,
+    _accrued_fees: u64,
     scaled_total_supply: u128,
     scale_factor: u128,
 ) -> u128 {
-    let available = u128::from(vault_balance)
-        .checked_sub(u128::from(core::cmp::min(vault_balance, accrued_fees)))
-        .expect("available underflow");
+    // COAL-C01: settlement factor uses full vault balance (no fee reservation)
+    let vault_u128 = u128::from(vault_balance);
     let total_norm = scaled_total_supply
         .checked_mul(scale_factor)
         .expect("total_norm overflow")
@@ -716,7 +706,7 @@ fn settlement_factor_exact(
         return WAD;
     }
 
-    let raw = available
+    let raw = vault_u128
         .checked_mul(WAD)
         .expect("settlement raw overflow")
         .checked_div(total_norm)
@@ -1477,9 +1467,11 @@ fn historical_scenario_d_full_lifecycle() {
         t0 + 7 * day,
         true,
     );
-    let fees_reserved = core::cmp::min(expected_vault, expected_fees);
-    let borrowable = expected_vault - fees_reserved;
-    assert!(borrowable >= 8_000_000_000, "oracle borrowability mismatch");
+    // COAL-L02: borrow uses full vault balance (no fee reservation)
+    assert!(
+        expected_vault >= 8_000_000_000,
+        "oracle borrowability mismatch"
+    );
     expected_vault -= 8_000_000_000;
     expected_tb += 8_000_000_000;
 

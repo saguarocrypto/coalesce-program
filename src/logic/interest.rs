@@ -197,7 +197,7 @@ pub fn accrue_interest(
 /// lender payouts when the vault is underfunded.
 ///
 /// # Arguments
-/// * `available` - vault balance available for lenders (vault - fee reserve)
+/// * `available` - vault balance available for lenders
 /// * `total_normalized` - total deposits at current scale (scaled_supply * scale_factor / WAD)
 pub fn compute_settlement_factor(
     available: u128,
@@ -317,7 +317,8 @@ mod tests {
         let interest_delta_wad = interest_delta_wad_after_elapsed(annual_bps, elapsed_seconds);
         let fee_delta_wad = interest_delta_wad * u128::from(fee_rate_bps) / BPS_VAL;
         // Use pre-accrual scale_factor_before (matches on-chain logic)
-        let fee_normalized = scaled_supply * scale_factor_before / WAD_VAL * fee_delta_wad / WAD_VAL;
+        let fee_normalized =
+            scaled_supply * scale_factor_before / WAD_VAL * fee_delta_wad / WAD_VAL;
         u64::try_from(fee_normalized).unwrap()
     }
 

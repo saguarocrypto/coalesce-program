@@ -150,23 +150,14 @@ fn normalize(scaled: u128, scale_factor: u128) -> Result<u128, &'static str> {
         .ok_or("div-by-zero: WAD")
 }
 
-/// Stand-alone replica of settlement factor computation from withdraw.rs:108-147.
+/// Stand-alone replica of settlement factor computation from withdraw.rs.
+/// COAL-C01: uses full vault balance (no fee reservation).
 fn compute_settlement_factor(
     vault_balance: u128,
-    accrued_protocol_fees: u128,
+    _accrued_protocol_fees: u128,
     scaled_total_supply: u128,
     scale_factor: u128,
 ) -> Result<u128, &'static str> {
-    let fees_reserved = if vault_balance < accrued_protocol_fees {
-        vault_balance
-    } else {
-        accrued_protocol_fees
-    };
-
-    let available = vault_balance
-        .checked_sub(fees_reserved)
-        .ok_or("underflow in available")?;
-
     let total_normalized = scaled_total_supply
         .checked_mul(scale_factor)
         .ok_or("overflow in total_normalized mul")?
@@ -177,7 +168,7 @@ fn compute_settlement_factor(
         return Ok(WAD);
     }
 
-    let raw = available
+    let raw = vault_balance
         .checked_mul(WAD)
         .ok_or("overflow in raw mul")?
         .checked_div(total_normalized)
@@ -625,7 +616,7 @@ fn concolic_accrue_path6_fee_fits_u64() {
     let interest_delta_wad = growth - WAD;
     let new_sf = mul_wad_oracle(WAD, growth).unwrap();
     let fee_delta_wad = interest_delta_wad * 500 / BPS; // 5% of interest
-    // Use pre-accrual scale factor (WAD) for fee computation (Finding 10)
+                                                        // Use pre-accrual scale factor (WAD) for fee computation (Finding 10)
     let fee_normalized = supply * WAD / WAD * fee_delta_wad / WAD;
 
     assert!(
@@ -960,38 +951,34 @@ fn concolic_deposit_path4_overflow_amount_times_wad() {
 }
 
 // =========================================================================
-// PATH CONDITION TABLE: settlement factor (withdraw.rs:108-147)
+// PATH CONDITION TABLE: settlement factor (withdraw.rs)
 // =========================================================================
 //
-// Source: src/processor/withdraw.rs, lines 108-147
+// COAL-C01: settlement factor uses full vault balance (no fee reservation).
 //
-//  Branch 1 (line 116-121): fees_reserved = min(vault_balance, accrued_fees)
-//    Condition A: vault_balance < accrued_fees => fees_reserved = vault_balance
-//    Condition B: vault_balance >= accrued_fees => fees_reserved = accrued_fees
-//
-//  Branch 2 (line 126-131): total_normalized = scaled_supply * sf / WAD
+//  Branch 1: total_normalized = scaled_supply * sf / WAD
 //    Condition: checked_mul/checked_div may overflow
 //
-//  Branch 3 (line 133): total_normalized == 0
+//  Branch 2: total_normalized == 0
 //    Condition A: total_normalized == 0 => return WAD
 //    Condition B: total_normalized > 0 => CONTINUE
 //
-//  Branch 4 (line 136-140): raw = available * WAD / total_normalized
+//  Branch 3: raw = vault_balance * WAD / total_normalized
 //    Condition: checked_mul/checked_div may overflow
 //
-//  Branch 5 (line 142): raw > WAD
+//  Branch 4: raw > WAD
 //    Condition A: raw > WAD => capped = WAD (overfunded)
 //    Condition B: raw <= WAD => capped = raw (underfunded or exact)
 //
-//  Branch 6 (line 143): capped < 1
+//  Branch 5: capped < 1
 //    Condition A: capped < 1 => factor = 1 (minimum clamp)
 //    Condition B: capped >= 1 => factor = capped
 //
 // Composite paths:
 //   Path 1: total_normalized == 0 => WAD
-//   Path 2: available == 0 => raw = 0 => capped = 0 => factor = 1 (clamped)
-//   Path 3: available > total_normalized (overfunded) => raw > WAD => factor = WAD
-//   Path 4: available < total_normalized (underfunded) => proportional factor
+//   Path 2: vault_balance == 0 => raw = 0 => capped = 0 => factor = 1 (clamped)
+//   Path 3: vault_balance > total_normalized (overfunded) => raw > WAD => factor = WAD
+//   Path 4: vault_balance < total_normalized (underfunded) => proportional factor
 
 #[test]
 fn concolic_settlement_path1_total_normalized_zero() {
@@ -1011,28 +998,30 @@ fn concolic_settlement_path1_total_normalized_zero() {
 }
 
 #[test]
-fn concolic_settlement_path2_available_zero() {
-    // vault_balance == fees => available = 0 => raw = 0 => capped = 0 => factor = 1
+fn concolic_settlement_path2_vault_half() {
+    // COAL-C01: vault_balance used directly (fees ignored)
+    // vault = 500K, supply = 1M => factor = WAD/2
     let supply: u128 = 1_000_000;
     let result = compute_settlement_factor(
         500_000, // vault balance
-        500_000, // fees = vault_balance => available = 0
+        500_000, // fees ignored
         supply, WAD,
     );
     assert!(result.is_ok(), "settlement path 2: should succeed");
+    let expected = 500_000u128 * WAD / 1_000_000;
     assert_eq!(
         result.unwrap_or(0),
-        1,
-        "settlement path 2: available == 0 => factor clamped to 1"
+        expected,
+        "settlement path 2: vault = 50% of supply => factor = WAD/2"
     );
 }
 
 #[test]
 fn concolic_settlement_path2b_vault_empty() {
-    // vault_balance = 0 => fees_reserved = 0 => available = 0 => factor = 1
+    // vault_balance = 0 => raw = 0 => capped = 0 => factor = 1 (clamped)
     let result = compute_settlement_factor(
         0,         // empty vault
-        0,         // no fees
+        0,         // fees ignored
         1_000_000, // some supply
         WAD,
     );
@@ -1046,7 +1035,7 @@ fn concolic_settlement_path2b_vault_empty() {
 
 #[test]
 fn concolic_settlement_path3_overfunded() {
-    // available > total_normalized => raw > WAD => factor = WAD
+    // vault_balance > total_normalized => raw > WAD => factor = WAD
     let supply: u128 = 1_000_000;
     let result = compute_settlement_factor(
         2_000_000, // vault = 2x supply
@@ -1056,14 +1045,14 @@ fn concolic_settlement_path3_overfunded() {
     assert!(result.is_ok(), "settlement path 3: should succeed");
 
     let factor = result.unwrap_or(0);
-    // available = 2M, total_normalized = 1M => raw = 2*WAD => capped at WAD
+    // vault = 2M, total_normalized = 1M => raw = 2*WAD => capped at WAD
     assert_eq!(factor, WAD, "settlement path 3: overfunded => factor = WAD");
 }
 
 #[test]
 fn concolic_settlement_path4_underfunded() {
-    // available < total_normalized => proportional
-    // 50% funded: available = 500K, total_normalized = 1M
+    // vault_balance < total_normalized => proportional
+    // 50% funded: vault = 500K, total_normalized = 1M
     let supply: u128 = 1_000_000;
     let result = compute_settlement_factor(
         500_000, // vault = 50% of supply
@@ -1081,39 +1070,39 @@ fn concolic_settlement_path4_underfunded() {
 }
 
 #[test]
-fn concolic_settlement_path4b_underfunded_with_fees() {
-    // vault = 1M, fees = 200K => available = 800K, supply = 1M
-    // factor = 800K * WAD / 1M = 0.8 * WAD
+fn concolic_settlement_path4b_vault_equals_supply() {
+    // COAL-C01: vault = 1M used directly (fees ignored), supply = 1M
+    // factor = 1M * WAD / 1M = WAD (fully funded)
     let supply: u128 = 1_000_000;
     let result = compute_settlement_factor(
         1_000_000, // vault
-        200_000,   // fees reserved
+        200_000,   // fees ignored
         supply, WAD,
     );
     assert!(result.is_ok(), "settlement path 4b: should succeed");
 
     let factor = result.unwrap_or(0);
-    let expected = 800_000u128 * WAD / 1_000_000;
     assert_eq!(
-        factor, expected,
-        "settlement path 4b: 80% available => factor = 0.8 * WAD"
+        factor, WAD,
+        "settlement path 4b: vault == supply => factor = WAD"
     );
 }
 
 #[test]
-fn concolic_settlement_fees_capped_at_vault() {
-    // vault_balance < accrued_fees => fees_reserved = vault_balance
-    // => available = vault_balance - vault_balance = 0 => factor = 1
+fn concolic_settlement_fees_ignored() {
+    // COAL-C01: fees are ignored; vault_balance used directly
+    // vault = 100, supply = 1M => factor = 100 * WAD / 1M
     let result = compute_settlement_factor(
         100,     // vault
-        999_999, // fees much larger than vault
+        999_999, // fees ignored
         1_000_000, WAD,
     );
-    assert!(result.is_ok(), "settlement fees capped: should succeed");
+    assert!(result.is_ok(), "settlement fees ignored: should succeed");
+    let expected = 100u128 * WAD / 1_000_000;
     assert_eq!(
         result.unwrap_or(0),
-        1,
-        "settlement fees capped: all vault reserved for fees => factor = 1"
+        expected,
+        "settlement fees ignored: factor = vault * WAD / total_normalized"
     );
 }
 

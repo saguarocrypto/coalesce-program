@@ -325,13 +325,7 @@ fn clock_jump_to_maturity_equals_gradual() {
         let sf_before = expected_gradual_sf;
         expected_gradual_sf = scale_factor_after_exact(expected_gradual_sf, 1000, elapsed);
         expected_gradual_fees = expected_gradual_fees
-            .checked_add(fee_delta_exact(
-                supply,
-                sf_before,
-                1000,
-                500,
-                elapsed,
-            ))
+            .checked_add(fee_delta_exact(supply, sf_before, 1000, 500, elapsed))
             .expect("expected fees overflow");
         expected_last = ts;
     }

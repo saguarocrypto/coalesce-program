@@ -38,7 +38,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     if data.len() < 8 {
         return Err(ProgramError::InvalidInstructionData);
     }
-    let amount = u64::from_le_bytes(data[0..8].try_into().unwrap());
+    let amount = u64::from_le_bytes(
+        data[0..8]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidInstructionData)?,
+    );
 
     // SR-029: amount > 0
     if amount == 0 {
@@ -157,16 +161,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(LendingError::InvalidTokenAccountOwner.into());
     }
 
-    // Step 5: Transfer tokens (lender -> vault)
-    pinocchio_token::instructions::Transfer {
-        from: lender_token_account,
-        to: vault_account,
-        authority: lender,
-        amount,
-    }
-    .invoke()?;
-
-    // Create or update lender position
+    // Validate and create/update lender position BEFORE transfer (CEI).
     let (expected_pos_pda, pos_bump) = Address::find_program_address(
         &[
             SEED_LENDER,
@@ -183,10 +178,6 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     // Lamports can be donated to any PDA, so lamports > 0 is not proof of initialization.
     let position_exists = lender_position_account.owned_by(program_id);
     if position_exists {
-        // Defense-in-depth: verify ownership (invariant from branch condition)
-        if !lender_position_account.owned_by(program_id) {
-            return Err(LendingError::InvalidAccountOwner.into());
-        }
         // Update existing position
         // SAFETY: This is the only mutable borrow of this account in this instruction.
         // Account data length is verified by bytemuck::try_from_bytes_mut.
@@ -213,7 +204,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
             .ok_or(LendingError::MathOverflow)?;
         position.set_scaled_balance(new_balance);
     } else {
-        // Create the lender position account
+        // Create the lender position account (system program CPI — not a token transfer)
         let pos_bump_ref = [pos_bump];
         let pos_signer_seeds = [
             pinocchio::cpi::Seed::from(SEED_LENDER),
@@ -248,9 +239,18 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         position.bump = pos_bump;
     }
 
-    // Step 7: Update market
+    // CEI: Update market state BEFORE transfer CPI (Finding 3).
     market.set_scaled_total_supply(new_scaled_total);
     market.set_total_deposited(new_total_deposited);
+
+    // Transfer tokens (lender -> vault)
+    pinocchio_token::instructions::Transfer {
+        from: lender_token_account,
+        to: vault_account,
+        authority: lender,
+        amount,
+    }
+    .invoke()?;
 
     log!(
         "evt:deposit market={} lender={} amount={} scaled={}",

@@ -862,11 +862,8 @@ fn concrete_deposit(state: &mut RustConcreteState, lender_idx: usize, amount: u6
 fn concrete_borrow(state: &mut RustConcreteState, amount: u64) {
     assert!(amount > 0);
     concrete_accrue(state, true);
-    let fees_reserved = state
-        .vault_balance
-        .min(state.market.accrued_protocol_fees());
-    let borrowable = state.vault_balance - fees_reserved;
-    assert!(amount <= borrowable);
+    // COAL-L02: Full vault balance is borrowable (no fee reservation)
+    assert!(amount <= state.vault_balance);
     let new_wl = state.whitelist.current_borrowed() + amount;
     assert!(new_wl <= state.whitelist.max_borrow_capacity());
     state
@@ -911,18 +908,26 @@ fn concrete_withdraw(state: &mut RustConcreteState, lender_idx: usize) {
 fn concrete_collect_fees(state: &mut RustConcreteState) -> bool {
     concrete_accrue(state, true);
     let fees = state.market.accrued_protocol_fees();
-    if fees == 0 { return false; }
+    if fees == 0 {
+        return false;
+    }
     let mut withdrawable = fees.min(state.vault_balance);
     if state.market.scaled_total_supply() > 0 {
         let sf = state.market.scale_factor();
-        let total_norm = state.market.scaled_total_supply()
-            .checked_mul(sf).unwrap()
-            .checked_div(WAD).unwrap();
+        let total_norm = state
+            .market
+            .scaled_total_supply()
+            .checked_mul(sf)
+            .unwrap()
+            .checked_div(WAD)
+            .unwrap();
         let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
         let safe_max = state.vault_balance.saturating_sub(lender_claims);
         withdrawable = withdrawable.min(safe_max);
     }
-    if withdrawable == 0 { return false; }
+    if withdrawable == 0 {
+        return false;
+    }
     state.vault_balance -= withdrawable;
     state.market.set_accrued_protocol_fees(fees - withdrawable);
     true
@@ -1246,8 +1251,7 @@ fn refinement_proof_collect_fees() {
     // COAL-C01: fees are only collectable when vault > lender claims.
     // Simulate borrower interest repayment funding the vault.
     let sf = state.market.scale_factor();
-    let total_norm = state.market.scaled_total_supply()
-        .checked_mul(sf).unwrap() / WAD;
+    let total_norm = state.market.scaled_total_supply().checked_mul(sf).unwrap() / WAD;
     let lender_claims = u64::try_from(total_norm).unwrap();
     let needed = u128::from(lender_claims) + u128::from(state.market.accrued_protocol_fees());
     if u128::from(state.vault_balance) < needed {
@@ -2180,9 +2184,8 @@ fn try_execute_concrete(state: &mut RustConcreteState, action: &TraceAction) -> 
             if accrue_interest(&mut test_market, &state.config, state.current_time).is_err() {
                 return false;
             }
-            let fees_reserved = state.vault_balance.min(test_market.accrued_protocol_fees());
-            let borrowable = state.vault_balance - fees_reserved;
-            if *amount > borrowable {
+            // COAL-L02: No fee reservation; use full vault balance
+            if *amount > state.vault_balance {
                 return false;
             }
             let new_wl = state.whitelist.current_borrowed() + *amount;
@@ -2381,9 +2384,8 @@ fn tla_model_step(
             state.accrued_protocol_fees = new_fees;
             state.last_accrual_timestamp = new_last;
 
-            let fees_reserved = state.vault_balance.min(new_fees);
-            let borrowable = state.vault_balance - fees_reserved;
-            if amt > borrowable {
+            // COAL-L02: No fee reservation; use full vault balance
+            if amt > state.vault_balance {
                 return false;
             }
             if state.whitelist_current_borrowed + amt > tla_max_capacity {
@@ -2490,11 +2492,11 @@ fn tla_model_step(
             let mut withdrawable = new_fees.min(state.vault_balance);
             // COAL-C01: cap fee withdrawal above lender claims when supply > 0
             if state.scaled_total_supply > 0 {
-                let total_norm = state.scaled_total_supply
-                    .checked_mul(new_sf).unwrap()
-                    / WAD;
+                let total_norm = state.scaled_total_supply.checked_mul(new_sf).unwrap() / WAD;
                 let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
-                let safe_max = state.vault_balance.saturating_sub(u128::from(lender_claims));
+                let safe_max = state
+                    .vault_balance
+                    .saturating_sub(u128::from(lender_claims));
                 withdrawable = withdrawable.min(safe_max);
             }
             if withdrawable == 0 {

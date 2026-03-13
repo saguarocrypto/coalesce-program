@@ -506,11 +506,7 @@ impl SimulatedProtocol {
         accrue_interest(&mut self.market, &self.config, self.current_timestamp)
             .map_err(|e| format!("Accrue failed: {:?}", e))?;
 
-        let fees_reserved = std::cmp::min(self.vault_balance, self.market.accrued_protocol_fees());
-        let borrowable = self
-            .vault_balance
-            .checked_sub(fees_reserved)
-            .ok_or("MathOverflow")?;
+        let borrowable = self.vault_balance;
 
         if amount > borrowable {
             return Err("BorrowAmountTooHigh".to_string());
@@ -586,13 +582,6 @@ impl SimulatedProtocol {
         // Compute settlement factor if not set
         if self.market.settlement_factor_wad() == 0 {
             let vault_balance_u128 = u128::from(self.vault_balance);
-            let fees_reserved = {
-                let fees = u128::from(self.market.accrued_protocol_fees());
-                std::cmp::min(vault_balance_u128, fees)
-            };
-            let available = vault_balance_u128
-                .checked_sub(fees_reserved)
-                .ok_or("MathOverflow")?;
 
             let total_normalized = self
                 .market
@@ -604,7 +593,7 @@ impl SimulatedProtocol {
             let settlement_factor = if total_normalized == 0 {
                 WAD
             } else {
-                let raw = available
+                let raw = vault_balance_u128
                     .checked_mul(WAD)
                     .ok_or("MathOverflow")?
                     .checked_div(total_normalized)
@@ -686,8 +675,11 @@ impl SimulatedProtocol {
         // COAL-C01: cap fee withdrawal above lender claims when supply > 0
         if self.market.scaled_total_supply() > 0 {
             let sf = self.market.scale_factor();
-            let total_norm = self.market.scaled_total_supply()
-                .checked_mul(sf).ok_or("MathOverflow")?
+            let total_norm = self
+                .market
+                .scaled_total_supply()
+                .checked_mul(sf)
+                .ok_or("MathOverflow")?
                 / WAD;
             let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
             let safe_max = self.vault_balance.saturating_sub(lender_claims);
@@ -720,13 +712,6 @@ impl SimulatedProtocol {
             .map_err(|e| format!("Accrue failed: {:?}", e))?;
 
         let vault_balance_u128 = u128::from(self.vault_balance);
-        let fees_reserved = {
-            let fees = u128::from(self.market.accrued_protocol_fees());
-            std::cmp::min(vault_balance_u128, fees)
-        };
-        let available = vault_balance_u128
-            .checked_sub(fees_reserved)
-            .ok_or("MathOverflow")?;
 
         let total_normalized = self
             .market
@@ -738,7 +723,7 @@ impl SimulatedProtocol {
         let new_factor = if total_normalized == 0 {
             WAD
         } else {
-            let raw = available
+            let raw = vault_balance_u128
                 .checked_mul(WAD)
                 .ok_or("MathOverflow")?
                 .checked_div(total_normalized)
@@ -1585,14 +1570,16 @@ fn oracle_fee_delta_normalized(
     u64::try_from(fee_normalized).ok()
 }
 
-fn oracle_settlement_factor(total_normalized: u128, vault_balance: u64, accrued_fees: u64) -> u128 {
+fn oracle_settlement_factor(
+    total_normalized: u128,
+    vault_balance: u64,
+    _accrued_fees: u64,
+) -> u128 {
     if total_normalized == 0 {
         return WAD;
     }
     let vault_u128 = u128::from(vault_balance);
-    let fees_reserved = vault_u128.min(u128::from(accrued_fees));
-    let available = vault_u128.saturating_sub(fees_reserved);
-    let raw = available * WAD / total_normalized;
+    let raw = vault_u128 * WAD / total_normalized;
     raw.min(WAD).max(1)
 }
 

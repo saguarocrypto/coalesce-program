@@ -565,14 +565,14 @@ pub fn build_force_close_position(
     Instruction {
         program_id: program_id(),
         accounts: vec![
-            AccountMeta::new(*market, false),                      // market (writable)
-            AccountMeta::new_readonly(*borrower, true),            // borrower (signer)
-            AccountMeta::new(lender_position, false),              // lender_position (writable)
-            AccountMeta::new(vault, false),                        // vault (writable)
-            AccountMeta::new(*escrow_token_account, false),        // escrow_token_account (writable)
-            AccountMeta::new_readonly(market_authority, false),    // market_authority PDA
-            AccountMeta::new_readonly(protocol_config, false),     // protocol_config PDA
-            AccountMeta::new_readonly(spl_token::id(), false),     // token_program
+            AccountMeta::new(*market, false),               // market (writable)
+            AccountMeta::new_readonly(*borrower, true),     // borrower (signer)
+            AccountMeta::new(lender_position, false),       // lender_position (writable)
+            AccountMeta::new(vault, false),                 // vault (writable)
+            AccountMeta::new(*escrow_token_account, false), // escrow_token_account (writable)
+            AccountMeta::new_readonly(market_authority, false), // market_authority PDA
+            AccountMeta::new_readonly(protocol_config, false), // protocol_config PDA
+            AccountMeta::new_readonly(spl_token::id(), false), // token_program
         ],
         data,
     }

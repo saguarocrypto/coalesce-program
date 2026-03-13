@@ -179,6 +179,12 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(LendingError::InvalidTokenAccountOwner.into());
     }
 
+    // CEI: Update state BEFORE transfer CPI (Finding 3).
+    let remaining_fees = accrued_fees
+        .checked_sub(withdrawable)
+        .ok_or(LendingError::MathOverflow)?;
+    market.set_accrued_protocol_fees(remaining_fees);
+
     // Step 3: Transfer tokens (vault -> fee_destination) with PDA signing
     let auth_bump_ref = [market.market_authority_bump];
     let auth_seeds = [
@@ -193,12 +199,6 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         amount: withdrawable,
     }
     .invoke_signed(&[pinocchio::cpi::Signer::from(&auth_seeds)])?;
-
-    // Step 4: Update accrued_protocol_fees
-    let remaining_fees = accrued_fees
-        .checked_sub(withdrawable)
-        .ok_or(LendingError::MathOverflow)?;
-    market.set_accrued_protocol_fees(remaining_fees);
 
     log!(
         "evt:collect_fees market={} amount={}",

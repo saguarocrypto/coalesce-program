@@ -229,11 +229,10 @@ proptest! {
             2 => Just(1u128),
             96 => 0u128..=10_000_000_000u128,
         ],
-        fees_reserved in 0u128..=5_000_000_000u128,
     ) {
         let scale_factor = WAD + sf_offset;
-        let fees = fees_reserved.min(vault_balance);
-        let available = vault_balance - fees;
+        // After COAL-C01: no fee reservation; available = vault_balance directly
+        let available = vault_balance;
 
         // Compute settlement factor
         let total_normalized = match normalize(scaled_balance, scale_factor) {

@@ -214,7 +214,12 @@ async fn test_full_lifecycle_creation_to_excess_withdrawal() {
 
     // 7. Withdraw excess — must succeed because the borrower overpaid via repay_interest
     // (50M extra tokens in vault beyond what lender + fees consumed)
-    let we = build_withdraw_excess(&s.market, &s.borrower.pubkey(), &s.borrower_ta);
+    let we = build_withdraw_excess(
+        &s.market,
+        &s.borrower.pubkey(),
+        &s.borrower_ta,
+        &s.blacklist_program,
+    );
     send_ok(&mut ctx, we, &[&s.borrower]).await;
 }
 

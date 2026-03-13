@@ -641,12 +641,11 @@ fn action_borrow(state: &mut TlaState, amount: u64) {
     // Step 1: Accrue interest (with fees)
     action_accrue(state, true);
 
-    // Step 2: Compute borrowable (fee reservation)
-    let fees_reserved = state
-        .vault_balance
-        .min(state.market.accrued_protocol_fees());
-    let borrowable = state.vault_balance - fees_reserved;
-    assert!(amount <= borrowable, "borrow amount exceeds borrowable");
+    // Step 2: Compute borrowable (COAL-L02: no fee reservation; use full vault)
+    assert!(
+        amount <= state.vault_balance,
+        "borrow amount exceeds vault balance"
+    );
 
     // Step 3: Whitelist capacity check
     let new_wl_total = state.whitelist.current_borrowed() + amount;
@@ -753,9 +752,13 @@ fn action_collect_fees(state: &mut TlaState) -> bool {
     let mut withdrawable = fees.min(state.vault_balance);
     if state.market.scaled_total_supply() > 0 {
         let sf = state.market.scale_factor();
-        let total_norm = state.market.scaled_total_supply()
-            .checked_mul(sf).unwrap()
-            .checked_div(WAD).unwrap();
+        let total_norm = state
+            .market
+            .scaled_total_supply()
+            .checked_mul(sf)
+            .unwrap()
+            .checked_div(WAD)
+            .unwrap();
         let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
         let safe_max = state.vault_balance.saturating_sub(lender_claims);
         withdrawable = withdrawable.min(safe_max);
@@ -1095,8 +1098,7 @@ fn tla_collect_fees() {
         let mut tmp = state.market;
         accrue_interest(&mut tmp, &state.config, state.current_time).unwrap();
         let sf = tmp.scale_factor();
-        let total_norm = tmp.scaled_total_supply()
-            .checked_mul(sf).unwrap() / WAD;
+        let total_norm = tmp.scaled_total_supply().checked_mul(sf).unwrap() / WAD;
         let lender_claims = u64::try_from(total_norm).unwrap();
         let needed = u128::from(lender_claims) + u128::from(tmp.accrued_protocol_fees());
         if u128::from(state.vault_balance) < needed {
@@ -1123,9 +1125,12 @@ fn tla_collect_fees() {
     // COAL-C01: apply lender-claims cap using post-accrual scale factor
     if oracle_market.scaled_total_supply() > 0 {
         let sf = oracle_market.scale_factor();
-        let total_norm = oracle_market.scaled_total_supply()
-            .checked_mul(sf).unwrap()
-            .checked_div(WAD).unwrap();
+        let total_norm = oracle_market
+            .scaled_total_supply()
+            .checked_mul(sf)
+            .unwrap()
+            .checked_div(WAD)
+            .unwrap();
         let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
         let safe_max = pre_collect.vault_balance.saturating_sub(lender_claims);
         expected_withdrawable = expected_withdrawable.min(safe_max);
@@ -1744,9 +1749,12 @@ fn tla_invariant_fees_non_negative() {
         // COAL-C01: apply lender-claims cap
         if oracle_market.scaled_total_supply() > 0 {
             let sf = oracle_market.scale_factor();
-            let total_norm = oracle_market.scaled_total_supply()
-                .checked_mul(sf).unwrap()
-                .checked_div(WAD).unwrap();
+            let total_norm = oracle_market
+                .scaled_total_supply()
+                .checked_mul(sf)
+                .unwrap()
+                .checked_div(WAD)
+                .unwrap();
             let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
             let safe_max = pre_collect.vault_balance.saturating_sub(lender_claims);
             withdrawable = withdrawable.min(safe_max);
@@ -2104,14 +2112,12 @@ fn try_execute_action(state: &mut TlaState, action: &TlaAction) -> bool {
                 return false;
             }
 
-            // Check borrowable
+            // Check borrowable (COAL-L02: no fee reservation; use full vault)
             let mut test_market = state.market;
             if accrue_interest(&mut test_market, &state.config, state.current_time).is_err() {
                 return false;
             }
-            let fees_reserved = state.vault_balance.min(test_market.accrued_protocol_fees());
-            let borrowable = state.vault_balance - fees_reserved;
-            if *amount > borrowable {
+            if *amount > state.vault_balance {
                 return false;
             }
             let new_wl = state.whitelist.current_borrowed() + *amount;
@@ -2195,9 +2201,12 @@ fn try_execute_action(state: &mut TlaState, action: &TlaAction) -> bool {
             // COAL-C01: apply lender-claims cap
             if test_market.scaled_total_supply() > 0 {
                 let sf = test_market.scale_factor();
-                let total_norm = test_market.scaled_total_supply()
-                    .checked_mul(sf).unwrap()
-                    .checked_div(WAD).unwrap();
+                let total_norm = test_market
+                    .scaled_total_supply()
+                    .checked_mul(sf)
+                    .unwrap()
+                    .checked_div(WAD)
+                    .unwrap();
                 let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
                 let safe_max = state.vault_balance.saturating_sub(lender_claims);
                 withdrawable = withdrawable.min(safe_max);
@@ -2436,7 +2445,22 @@ proptest! {
                         accrue_interest(&mut oracle_market, &before.config, before.current_time)
                             .unwrap();
                         let oracle_fees = oracle_market.accrued_protocol_fees();
-                        let expected_withdrawable = oracle_fees.min(before.vault_balance);
+                        let mut expected_withdrawable = oracle_fees.min(before.vault_balance);
+                        // COAL-C01: Apply lender-claims cap to match model
+                        if oracle_market.scaled_total_supply() > 0 {
+                            let sf = oracle_market.scale_factor();
+                            let total_norm = oracle_market
+                                .scaled_total_supply()
+                                .checked_mul(sf)
+                                .unwrap()
+                                .checked_div(WAD)
+                                .unwrap();
+                            let lender_claims =
+                                u64::try_from(total_norm).unwrap_or(u64::MAX);
+                            let safe_max =
+                                before.vault_balance.saturating_sub(lender_claims);
+                            expected_withdrawable = expected_withdrawable.min(safe_max);
+                        }
                         prop_assert_eq!(
                             state.market.accrued_protocol_fees(),
                             oracle_fees - expected_withdrawable
@@ -2559,12 +2583,8 @@ fn tla_accrue_interest_formula_match() {
         let interest_delta_wad = oracle_interest_delta_wad(annual_bps, 0, checkpoint, i64::MAX);
         let expected_sf =
             oracle_scale_factor_after_accrual(WAD, annual_bps, 0, checkpoint, i64::MAX);
-        let expected_fees = oracle_fee_delta_normalized(
-            scaled_supply,
-            WAD,
-            interest_delta_wad,
-            fee_rate_bps,
-        );
+        let expected_fees =
+            oracle_fee_delta_normalized(scaled_supply, WAD, interest_delta_wad, fee_rate_bps);
 
         assert_eq!(
             market.scale_factor(),
@@ -2767,8 +2787,12 @@ fn tla_repay_zero_fee_accrual() {
     fee_config.set_fee_rate_bps(500);
     let mut market_with_fee = base;
     accrue_interest(&mut market_with_fee, &fee_config, 86400).unwrap();
-    let expected_fee_delta =
-        oracle_fee_delta_normalized(base.scaled_total_supply(), base.scale_factor(), expected_delta, 500);
+    let expected_fee_delta = oracle_fee_delta_normalized(
+        base.scaled_total_supply(),
+        base.scale_factor(),
+        expected_delta,
+        500,
+    );
     assert_eq!(market_with_fee.scale_factor(), expected_sf);
     assert_eq!(
         market_with_fee.accrued_protocol_fees(),
@@ -2803,8 +2827,12 @@ fn tla_resettle_zero_fee_accrual() {
     fee_config.set_fee_rate_bps(500);
     let mut market_with_fee = base;
     accrue_interest(&mut market_with_fee, &fee_config, 500_000).unwrap();
-    let expected_fee_delta =
-        oracle_fee_delta_normalized(base.scaled_total_supply(), base.scale_factor(), expected_delta, 500);
+    let expected_fee_delta = oracle_fee_delta_normalized(
+        base.scaled_total_supply(),
+        base.scale_factor(),
+        expected_delta,
+        500,
+    );
     assert_eq!(market_with_fee.scale_factor(), expected_sf);
     assert_eq!(
         market_with_fee.accrued_protocol_fees(),

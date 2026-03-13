@@ -44,7 +44,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     let mut scaled_amount = u128::from_le_bytes(scaled_amount_bytes);
 
     // SR-111: min_payout for slippage protection (0 = no minimum)
-    let min_payout = u64::from_le_bytes(data[16..24].try_into().unwrap());
+    let min_payout = u64::from_le_bytes(
+        data[16..24]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidInstructionData)?,
+    );
 
     // Lender must be signer
     if !lender.is_signer() {
@@ -272,7 +276,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     // COAL-H01: Track haircut gap for early withdrawals during distress.
     // This prevents re_settle from recycling these tokens into an inflated factor.
     if settlement_factor < WAD {
-        let entitled = u64::try_from(normalized_amount).unwrap_or(u64::MAX);
+        let entitled = u64::try_from(normalized_amount).map_err(|_| LendingError::MathOverflow)?;
         let gap = entitled.saturating_sub(payout);
         if gap > 0 {
             let new_acc = market
@@ -282,6 +286,23 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
             market.set_haircut_accumulator(new_acc);
         }
     }
+
+    // CEI: Update state BEFORE transfer CPI (Finding 3).
+    let new_balance = position
+        .scaled_balance()
+        .checked_sub(scaled_amount)
+        .ok_or(LendingError::MathOverflow)?;
+    position.set_scaled_balance(new_balance);
+
+    let new_scaled_total = market
+        .scaled_total_supply()
+        .checked_sub(scaled_amount)
+        .ok_or(LendingError::MathOverflow)?;
+    market.set_scaled_total_supply(new_scaled_total);
+
+    // COAL-M01: Decrement total_deposited so withdrawals free up cap space.
+    let new_total_deposited = market.total_deposited().saturating_sub(payout);
+    market.set_total_deposited(new_total_deposited);
 
     // Step 5: Transfer tokens (vault -> lender) with PDA signing
     let auth_bump_ref = [market.market_authority_bump];
@@ -297,25 +318,6 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         amount: payout,
     }
     .invoke_signed(&[pinocchio::cpi::Signer::from(&auth_seeds)])?;
-
-    // Step 6: Update lender position
-    let new_balance = position
-        .scaled_balance()
-        .checked_sub(scaled_amount)
-        .ok_or(LendingError::MathOverflow)?;
-    position.set_scaled_balance(new_balance);
-
-    // Step 7: Update market
-    let new_scaled_total = market
-        .scaled_total_supply()
-        .checked_sub(scaled_amount)
-        .ok_or(LendingError::MathOverflow)?;
-    market.set_scaled_total_supply(new_scaled_total);
-
-    // COAL-M01 fix 2: decrement total_deposited so cap space is freed for future deposits.
-    // Uses saturating_sub because payout may include accrued interest exceeding original deposit.
-    let new_total_deposited = market.total_deposited().saturating_sub(payout);
-    market.set_total_deposited(new_total_deposited);
 
     log!(
         "evt:withdraw market={} lender={} payout={} scaled={}",

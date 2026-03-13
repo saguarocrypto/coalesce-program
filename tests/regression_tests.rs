@@ -407,13 +407,8 @@ fn execute_transaction(state: &mut SimulationState, tx: &Transaction, ctx: &str)
             )
             .unwrap_or_else(|e| panic!("{ctx}: accrue_interest failed: {e:?}"));
 
-            // Step 2: Fee reservation
-            let fees_reserved =
-                core::cmp::min(state.vault_balance, state.market.accrued_protocol_fees());
-            let borrowable = state
-                .vault_balance
-                .checked_sub(fees_reserved)
-                .expect("borrowable underflow");
+            // Step 2: Borrowable check (COAL-L02: no fee reservation, full vault is borrowable)
+            let borrowable = state.vault_balance;
             assert!(
                 *amount <= borrowable,
                 "{ctx}: borrow amount {amount} > borrowable {borrowable}"
@@ -486,12 +481,8 @@ fn execute_transaction(state: &mut SimulationState, tx: &Transaction, ctx: &str)
 
             // Step 2: Compute settlement factor if not yet settled
             if state.market.settlement_factor_wad() == 0 {
-                let vault_balance_u128 = u128::from(state.vault_balance);
-                let fees_u128 = u128::from(state.market.accrued_protocol_fees());
-                let fees_reserved = core::cmp::min(vault_balance_u128, fees_u128);
-                let available_for_lenders = vault_balance_u128
-                    .checked_sub(fees_reserved)
-                    .expect("available underflow");
+                // COAL-C01: no fee reservation, full vault is available for lenders
+                let available_for_lenders = u128::from(state.vault_balance);
 
                 let total_normalized = state
                     .market
@@ -615,13 +606,8 @@ fn execute_transaction(state: &mut SimulationState, tx: &Transaction, ctx: &str)
             accrue_interest(&mut state.market, &zero_config, *current_timestamp)
                 .unwrap_or_else(|e| panic!("{ctx}: accrue_interest failed: {e:?}"));
 
-            // Recompute settlement factor
-            let vault_balance_u128 = u128::from(state.vault_balance);
-            let fees_u128 = u128::from(state.market.accrued_protocol_fees());
-            let fees_reserved = core::cmp::min(vault_balance_u128, fees_u128);
-            let available = vault_balance_u128
-                .checked_sub(fees_reserved)
-                .expect("available underflow");
+            // Recompute settlement factor (COAL-C01: no fee reservation, full vault available)
+            let available = u128::from(state.vault_balance);
 
             let total_normalized = state
                 .market

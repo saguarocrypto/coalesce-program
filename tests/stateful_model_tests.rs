@@ -259,9 +259,8 @@ impl ModelState {
             return false;
         }
 
-        let fees_reserved = self.vault_balance.min(self.accrued_protocol_fees);
-        let borrowable = self.vault_balance.saturating_sub(fees_reserved);
-        if amount > borrowable || amount == 0 {
+        // COAL-L02: Full vault balance is borrowable (no fee reservation)
+        if amount > self.vault_balance || amount == 0 {
             return false;
         }
 
@@ -301,9 +300,8 @@ impl ModelState {
         // Compute settlement factor if needed
         if self.settlement_factor_wad == 0 {
             let vault_u128 = u128::from(self.vault_balance);
-            let fees_u128 = u128::from(self.accrued_protocol_fees);
-            let fees_reserved = vault_u128.min(fees_u128);
-            let available = vault_u128.saturating_sub(fees_reserved);
+            // COAL-C01: No fee reservation; use full vault balance
+            let available = vault_u128;
 
             let total_normalized = self
                 .scaled_total_supply
@@ -432,9 +430,8 @@ impl OnChainState {
             return false;
         }
 
-        let fees_reserved = self.vault_balance.min(self.market.accrued_protocol_fees());
-        let borrowable = self.vault_balance.saturating_sub(fees_reserved);
-        if amount > borrowable {
+        // COAL-L02: No fee reservation; use full vault balance
+        if amount > self.vault_balance {
             return false;
         }
 
@@ -473,9 +470,8 @@ impl OnChainState {
         // Settlement factor
         if self.market.settlement_factor_wad() == 0 {
             let vault_u128 = u128::from(self.vault_balance);
-            let fees_u128 = u128::from(self.market.accrued_protocol_fees());
-            let fees_reserved = vault_u128.min(fees_u128);
-            let available = vault_u128.saturating_sub(fees_reserved);
+            // COAL-C01: No fee reservation; use full vault balance
+            let available = vault_u128;
 
             let total_normalized = self
                 .market

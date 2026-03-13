@@ -250,8 +250,7 @@ fn overflow_fee_truncation_to_u64() {
         "safe truncation boundary should succeed"
     );
     assert_eq!(safe_market.scale_factor(), expected_sf);
-    let expected_safe_fee =
-        fee_delta_exact(safe_supply, WAD, annual_bps, fee_rate_bps, elapsed);
+    let expected_safe_fee = fee_delta_exact(safe_supply, WAD, annual_bps, fee_rate_bps, elapsed);
     assert_eq!(safe_market.accrued_protocol_fees(), expected_safe_fee);
     assert_eq!(safe_market.last_accrual_timestamp(), elapsed);
 
@@ -503,13 +502,8 @@ fn boundary_max_time_elapsed() {
 
         let effective_elapsed = if ts > maturity { maturity } else { ts };
         let expected_sf = scale_factor_after_elapsed_exact(WAD, annual_bps, effective_elapsed);
-        let expected_fee = fee_delta_exact(
-            supply,
-            WAD,
-            annual_bps,
-            fee_rate_bps,
-            effective_elapsed,
-        );
+        let expected_fee =
+            fee_delta_exact(supply, WAD, annual_bps, fee_rate_bps, effective_elapsed);
 
         assert_eq!(market.scale_factor(), expected_sf);
         assert_eq!(market.accrued_protocol_fees(), expected_fee);
@@ -615,15 +609,13 @@ fn regression_fee_accrual_at_100_percent_fee_rate() {
 
     let mut low = make_market(annual_bps, i64::MAX, WAD, supply, 0, 0);
     accrue_interest(&mut low, &make_config(fee_rate_bps_low), elapsed).unwrap();
-    let expected_low_fee =
-        fee_delta_exact(supply, WAD, annual_bps, fee_rate_bps_low, elapsed);
+    let expected_low_fee = fee_delta_exact(supply, WAD, annual_bps, fee_rate_bps_low, elapsed);
     assert_eq!(low.scale_factor(), expected_sf);
     assert_eq!(low.accrued_protocol_fees(), expected_low_fee);
 
     let mut high = make_market(annual_bps, i64::MAX, WAD, supply, 0, 0);
     accrue_interest(&mut high, &make_config(fee_rate_bps_high), elapsed).unwrap();
-    let expected_high_fee =
-        fee_delta_exact(supply, WAD, annual_bps, fee_rate_bps_high, elapsed);
+    let expected_high_fee = fee_delta_exact(supply, WAD, annual_bps, fee_rate_bps_high, elapsed);
     assert_eq!(high.scale_factor(), expected_sf);
     assert_eq!(high.accrued_protocol_fees(), expected_high_fee);
     assert!(high.accrued_protocol_fees() >= low.accrued_protocol_fees());

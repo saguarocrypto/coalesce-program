@@ -660,59 +660,27 @@ fn mutation_deposit_cap_off_by_one() {
 // Category 10: Borrow fee reservation mutations
 // ===========================================================================
 
-/// Mutant class: remove fee reservation (borrowable = vault instead of vault - fees)
-///
-/// Mutation: Remove fee reservation in borrow (use vault_balance directly).
-/// Verifies that fees are reserved when computing borrowable amount.
+/// After COAL-L02: fee reservation removed from borrow; borrowable = vault_balance directly.
 #[test]
 fn mutation_borrow_no_fee_reservation() {
     // Simulate: vault=1000, fees=200
-    // borrowable = vault - min(vault, fees) = 1000 - 200 = 800
+    // borrowable = vault_balance (no fee reservation)
     let vault_balance: u64 = 1000;
-    let accrued_fees: u64 = 200;
-    let fees_reserved = core::cmp::min(vault_balance, accrued_fees);
-    let borrowable = vault_balance - fees_reserved;
+    let borrowable = vault_balance;
 
-    assert_eq!(borrowable, 800);
-    assert_eq!(fees_reserved, 200);
-    assert!(
-        borrowable < vault_balance,
-        "fee reservation should reduce borrowable"
-    );
-
-    // Mutant: no reservation → borrowable = vault
-    let mutant_borrowable = vault_balance;
-    assert_ne!(
-        borrowable, mutant_borrowable,
-        "borrowable must NOT equal full vault when fees exist"
-    );
+    assert_eq!(borrowable, vault_balance);
 }
 
-/// Mutant class: `min` → `max` in fee reservation
-///
-/// Mutation: Use `max` instead of `min` for fee reservation.
-/// Verifies fee reservation uses min(vault, fees).
+/// After COAL-L02: fee reservation removed from borrow; borrowable = vault_balance directly.
+/// Min/max distinction is moot — no fee reservation step exists.
 #[test]
 fn mutation_borrow_fee_min_vs_max() {
-    // When fees > vault, reserve all of vault
+    // With no fee reservation, borrowable is always the full vault balance
     let vault: u64 = 100;
-    let fees: u64 = 500;
-    let reserved = core::cmp::min(vault, fees);
-    assert_eq!(reserved, 100, "should reserve min(vault, fees)");
+    let borrowable = vault;
+    assert_eq!(borrowable, vault);
 
-    // Mutant: max(vault, fees) = 500 → would underflow subtraction
-    let mutant_reserved = core::cmp::max(vault, fees);
-    assert_eq!(mutant_reserved, 500);
-    assert_ne!(reserved, mutant_reserved, "min and max must differ");
-
-    // When vault > fees, reserve all fees
     let vault2: u64 = 500;
-    let fees2: u64 = 100;
-    let reserved2 = core::cmp::min(vault2, fees2);
-    assert_eq!(reserved2, 100, "should reserve min(vault, fees)");
-
-    // Mutant: max(vault, fees) = 500 → would leave 0 borrowable
-    let mutant_reserved2 = core::cmp::max(vault2, fees2);
-    assert_eq!(mutant_reserved2, 500);
-    assert_ne!(reserved2, mutant_reserved2);
+    let borrowable2 = vault2;
+    assert_eq!(borrowable2, vault2);
 }
