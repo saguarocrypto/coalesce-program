@@ -16,6 +16,13 @@ pub const MAX_FEE_RATE_BPS: u16 = 10_000;
 /// Expected decimals for the USDC mint.
 pub const USDC_DECIMALS: u8 = 6;
 
+/// USDC mint address on mainnet (EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v).
+/// COAL-L01: Hardcoded to enforce USDC-only markets.
+pub const USDC_MINT: [u8; 32] = [
+    198, 250, 122, 243, 190, 219, 173, 58, 61, 101, 243, 106, 171, 201, 116, 49, 177, 187, 228,
+    194, 210, 246, 224, 228, 124, 166, 2, 3, 69, 47, 93, 97,
+];
+
 /// Minimum seconds until maturity at market creation.
 pub const MIN_MATURITY_DELTA: i64 = 60;
 
@@ -98,6 +105,14 @@ mod tests {
     #[test]
     fn usdc_decimals_value() {
         assert_eq!(USDC_DECIMALS, 6u8);
+    }
+
+    #[test]
+    fn usdc_mint_value() {
+        // EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+        assert_eq!(USDC_MINT.len(), 32);
+        assert_eq!(USDC_MINT[0], 198);
+        assert_eq!(USDC_MINT[31], 97);
     }
 
     #[test]

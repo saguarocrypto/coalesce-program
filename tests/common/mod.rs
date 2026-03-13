@@ -617,7 +617,45 @@ pub fn build_withdraw_excess(
 
 /// Create a new SPL Token mint with the given authority and decimals.
 /// Returns the mint Pubkey.
+/// USDC mint address on mainnet (EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v).
+/// COAL-L01: The program enforces this as the only accepted mint.
+pub const USDC_MINT_PUBKEY: Pubkey =
+    solana_sdk::pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+
+/// Create an SPL Token mint at the hardcoded USDC address by injecting the
+/// account directly into the test context. Returns the USDC mint pubkey.
 pub async fn create_mint(
+    ctx: &mut ProgramTestContext,
+    authority: &Keypair,
+    decimals: u8,
+) -> Pubkey {
+    let rent = ctx.banks_client.get_rent().await.unwrap();
+    let mint_rent = rent.minimum_balance(spl_token::state::Mint::LEN);
+
+    // Build SPL Token mint account data (82 bytes) as raw bytes.
+    // Layout: [4 COption tag][32 mint_authority][8 supply][1 decimals][1 is_initialized][4 COption tag][32 freeze_authority]
+    let mut data = vec![0u8; spl_token::state::Mint::LEN];
+    // mint_authority = Some(authority)
+    data[0..4].copy_from_slice(&1u32.to_le_bytes()); // COption::Some
+    data[4..36].copy_from_slice(&authority.pubkey().to_bytes());
+    // supply = 0 (already zeroed)
+    // decimals
+    data[44] = decimals;
+    // is_initialized = true
+    data[45] = 1;
+    // freeze_authority = None (already zeroed)
+
+    let mut account =
+        AccountSharedData::new(mint_rent, spl_token::state::Mint::LEN, &spl_token::id());
+    account.set_data_from_slice(&data);
+    ctx.set_account(&USDC_MINT_PUBKEY, &account);
+
+    USDC_MINT_PUBKEY
+}
+
+/// Create a new SPL Token mint with a random address (not USDC).
+/// Used for negative tests that verify non-USDC mints are rejected.
+pub async fn create_random_mint(
     ctx: &mut ProgramTestContext,
     authority: &Keypair,
     decimals: u8,

@@ -120,6 +120,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(LendingError::InvalidMint.into());
     }
 
+    // COAL-L01: Enforce USDC-only markets.
+    if *mint_account.address().as_ref() != crate::constants::USDC_MINT {
+        return Err(LendingError::InvalidMint.into());
+    }
+
     // SR-025: borrower must be whitelisted
     let (expected_wl_pda, _) = Address::find_program_address(
         &[SEED_BORROWER_WHITELIST, borrower.address().as_ref()],

@@ -730,9 +730,9 @@ async fn test_err_007_invalid_mint() {
     let wl_before = common::get_account_data(&mut ctx, &borrower_whitelist).await;
     let maturity = common::PINNED_EPOCH + MIN_MATURITY_DELTA + 1;
 
-    let mint_5 = common::create_mint(&mut ctx, &admin, 5).await;
+    let mint_5 = common::create_random_mint(&mut ctx, &admin, 5).await;
     let mint_6 = common::create_mint(&mut ctx, &admin, 6).await;
-    let mint_7 = common::create_mint(&mut ctx, &admin, 7).await;
+    let mint_7 = common::create_random_mint(&mut ctx, &admin, 7).await;
 
     for (idx, (mint, should_succeed, expected_error)) in [
         (mint_5, false, Some(11u32)),

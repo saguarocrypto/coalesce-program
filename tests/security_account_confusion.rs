@@ -98,7 +98,7 @@ async fn test_deposit_wrong_mint() {
 
     // Create two different mints (both 6 decimals)
     let mint_a = common::create_mint(&mut ctx, &admin, 6).await;
-    let mint_b = common::create_mint(&mut ctx, &admin, 6).await;
+    let mint_b = common::create_random_mint(&mut ctx, &admin, 6).await;
 
     // Create market with mint A
     let market = common::setup_market_full(
@@ -577,7 +577,7 @@ async fn test_repay_wrong_mint() {
 
     // Create two mints
     let mint_a = common::create_mint(&mut ctx, &admin, 6).await;
-    let mint_b = common::create_mint(&mut ctx, &admin, 6).await;
+    let mint_b = common::create_random_mint(&mut ctx, &admin, 6).await;
 
     // Create market with mint A
     let market = common::setup_market_full(
