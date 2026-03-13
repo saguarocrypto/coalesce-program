@@ -29,7 +29,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     if data.len() < 2 {
         return Err(ProgramError::InvalidInstructionData);
     }
-    let fee_rate_bps = u16::from_le_bytes([data[0], data[1]]);
+    let fee_rate_bps = u16::from_le_bytes(
+        data[0..2]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidInstructionData)?,
+    );
 
     // --- Validate ---
     // SR-012: admin must be signer

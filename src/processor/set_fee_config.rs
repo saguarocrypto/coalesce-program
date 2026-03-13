@@ -22,7 +22,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     if data.len() < 2 {
         return Err(ProgramError::InvalidInstructionData);
     }
-    let new_fee_rate_bps = u16::from_le_bytes([data[0], data[1]]);
+    let new_fee_rate_bps = u16::from_le_bytes(data[0..2].try_into().unwrap());
 
     // Verify PDA
     let (expected_pda, _bump) = Address::find_program_address(&[SEED_PROTOCOL_CONFIG], program_id);

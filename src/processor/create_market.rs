@@ -33,16 +33,10 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     if data.len() < 26 {
         return Err(ProgramError::InvalidInstructionData);
     }
-    let market_nonce = u64::from_le_bytes([
-        data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
-    ]);
-    let annual_interest_bps = u16::from_le_bytes([data[8], data[9]]);
-    let maturity_timestamp = i64::from_le_bytes([
-        data[10], data[11], data[12], data[13], data[14], data[15], data[16], data[17],
-    ]);
-    let max_total_supply = u64::from_le_bytes([
-        data[18], data[19], data[20], data[21], data[22], data[23], data[24], data[25],
-    ]);
+    let market_nonce = u64::from_le_bytes(data[0..8].try_into().unwrap());
+    let annual_interest_bps = u16::from_le_bytes(data[8..10].try_into().unwrap());
+    let maturity_timestamp = i64::from_le_bytes(data[10..18].try_into().unwrap());
+    let max_total_supply = u64::from_le_bytes(data[18..26].try_into().unwrap());
 
     // --- Validations ---
 

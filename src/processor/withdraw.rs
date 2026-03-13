@@ -44,9 +44,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     let mut scaled_amount = u128::from_le_bytes(scaled_amount_bytes);
 
     // SR-111: min_payout for slippage protection (0 = no minimum)
-    let min_payout = u64::from_le_bytes([
-        data[16], data[17], data[18], data[19], data[20], data[21], data[22], data[23],
-    ]);
+    let min_payout = u64::from_le_bytes(data[16..24].try_into().unwrap());
 
     // Lender must be signer
     if !lender.is_signer() {
