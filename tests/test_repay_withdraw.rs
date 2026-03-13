@@ -1254,14 +1254,16 @@ async fn test_withdraw_multiple_partials() {
         "Scaled balance should be 2/3 after first withdrawal"
     );
 
-    // Partial withdraw another 1/3
+    // Partial withdraw another 1/3.
+    // Use min_payout=1 (instead of 0) so the tx signature differs from the
+    // first withdrawal (same scaled_amount + blockhash = duplicate tx otherwise).
     let withdraw_ix_2 = common::build_withdraw(
         &market,
         &lender.pubkey(),
         &lender_token.pubkey(),
         &blacklist_program.pubkey(),
         one_third,
-        0,
+        1,
     );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(

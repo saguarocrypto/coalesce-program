@@ -754,6 +754,8 @@ async fn test_withdraw_partial() {
     );
 
     // Withdraw the exact remaining scaled balance and verify deterministic completion.
+    // Use min_payout=1 so the tx signature differs from the first withdrawal
+    // (same scaled_amount + blockhash = duplicate-tx detection in BanksClient).
     let lender_balance_before_second =
         common::get_token_balance(&mut ctx, &lender_token.pubkey()).await;
     let withdraw_remaining_ix = common::build_withdraw(
@@ -762,7 +764,7 @@ async fn test_withdraw_partial() {
         &lender_token.pubkey(),
         &blacklist_program.pubkey(),
         remaining_scaled,
-        0,
+        1,
     );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
