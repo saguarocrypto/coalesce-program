@@ -93,9 +93,12 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
         pinocchio_token::state::TokenAccount::from_account_view_unchecked(vault_account)?
     };
     let vault_balance = u128::from(vault_token.amount());
-    // COAL-C01: Use full vault balance for settlement factor recomputation.
-    // See withdraw.rs for rationale.
-    let available_for_lenders = vault_balance;
+    // COAL-C01: No fee reservation (see withdraw.rs for rationale).
+    // COAL-H01: Subtract haircut accumulator to prevent recycled inflation.
+    let haircut_reserved = u128::from(market.haircut_accumulator());
+    let available_for_lenders = vault_balance
+        .checked_sub(haircut_reserved)
+        .unwrap_or(0); // Defensive: if accumulator exceeds vault, use 0
 
     // SR-122: Explicit check for zero scale_factor (defense-in-depth)
     let scale_factor = market.scale_factor();

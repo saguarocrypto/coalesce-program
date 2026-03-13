@@ -48,8 +48,12 @@ pub struct Market {
     pub settlement_factor_wad: [u8; 16],
     /// Market PDA bump.
     pub bump: u8,
+    /// Cumulative haircut gap from early withdrawals in distressed markets (COAL-H01).
+    /// Subtracted from available_for_lenders in re_settle to prevent recycled
+    /// haircut tokens from inflating the settlement factor.
+    pub haircut_accumulator: [u8; 8],
     /// Reserved.
-    pub padding: [u8; 21],
+    pub padding: [u8; 13],
 }
 
 impl Market {
@@ -143,6 +147,13 @@ impl Market {
     pub fn set_settlement_factor_wad(&mut self, val: u128) {
         self.settlement_factor_wad = val.to_le_bytes();
     }
+
+    pub fn haircut_accumulator(&self) -> u64 {
+        u64::from_le_bytes(self.haircut_accumulator)
+    }
+    pub fn set_haircut_accumulator(&mut self, val: u64) {
+        self.haircut_accumulator = val.to_le_bytes();
+    }
 }
 
 #[cfg(test)]
@@ -173,6 +184,7 @@ mod tests {
         assert_eq!(m.total_interest_repaid(), 0);
         assert_eq!(m.last_accrual_timestamp(), 0);
         assert_eq!(m.settlement_factor_wad(), 0);
+        assert_eq!(m.haircut_accumulator(), 0);
     }
 
     #[test]
@@ -348,6 +360,16 @@ mod tests {
     #[test]
     fn market_padding_zeroed() {
         let m = Market::zeroed();
-        assert_eq!(m.padding, [0u8; 21]);
+        assert_eq!(m.haircut_accumulator, [0u8; 8]);
+        assert_eq!(m.padding, [0u8; 13]);
+    }
+
+    #[test]
+    fn market_haircut_accumulator_roundtrip() {
+        let mut m = Market::zeroed();
+        for val in [0u64, 1, 1_000_000, u64::MAX] {
+            m.set_haircut_accumulator(val);
+            assert_eq!(m.haircut_accumulator(), val);
+        }
     }
 }

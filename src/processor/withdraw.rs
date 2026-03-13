@@ -271,6 +271,20 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(LendingError::InvalidTokenAccountOwner.into());
     }
 
+    // COAL-H01: Track haircut gap for early withdrawals during distress.
+    // This prevents re_settle from recycling these tokens into an inflated factor.
+    if settlement_factor < WAD {
+        let entitled = u64::try_from(normalized_amount).unwrap_or(u64::MAX);
+        let gap = entitled.saturating_sub(payout);
+        if gap > 0 {
+            let new_acc = market
+                .haircut_accumulator()
+                .checked_add(gap)
+                .ok_or(LendingError::MathOverflow)?;
+            market.set_haircut_accumulator(new_acc);
+        }
+    }
+
     // Step 5: Transfer tokens (vault -> lender) with PDA signing
     let auth_bump_ref = [market.market_authority_bump];
     let auth_seeds = [

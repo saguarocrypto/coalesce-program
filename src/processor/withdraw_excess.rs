@@ -139,7 +139,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
         return Err(LendingError::InvalidMint.into());
     }
 
-    let excess_amount = vault_token.amount();
+    let vault_balance = vault_token.amount();
+    // COAL-H01: Subtract haircut accumulator to prevent borrower from sweeping
+    // unpaid lender haircut value that remains in the vault after force-close.
+    let haircut_reserved = market.haircut_accumulator();
+    let excess_amount = vault_balance.saturating_sub(haircut_reserved);
     if excess_amount == 0 {
         return Err(LendingError::NoExcessToWithdraw.into());
     }
