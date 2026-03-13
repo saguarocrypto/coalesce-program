@@ -121,10 +121,9 @@ fn normalized_total_supply(market: &Market) -> u128 {
 }
 
 /// TLA+ AvailableForLenders
-fn available_for_lenders(vault_balance: u64, accrued_fees: u64) -> u128 {
-    let vb = u128::from(vault_balance);
-    let fees = u128::from(accrued_fees);
-    vb - vb.min(fees)
+/// COAL-C01: no fee reservation; full vault is available for lenders.
+fn available_for_lenders(vault_balance: u64, _accrued_fees: u64) -> u128 {
+    u128::from(vault_balance)
 }
 
 /// TLA+ ComputeSettlementFactor
@@ -737,20 +736,37 @@ fn action_withdraw(state: &mut TlaState, lender_idx: usize) {
 }
 
 /// TLA+ CollectFees
-fn action_collect_fees(state: &mut TlaState) {
+/// COAL-C01: withdrawable is capped to vault surplus above lender claims
+/// when supply > 0, preventing drain below obligations.
+/// Returns false if the operation would be a no-op (mirrors on-chain NoFeesToCollect).
+fn action_collect_fees(state: &mut TlaState) -> bool {
     // Step 1: Accrue interest (with fees)
     action_accrue(state, true);
 
     let fees = state.market.accrued_protocol_fees();
-    assert!(fees > 0, "must have fees to collect");
+    if fees == 0 {
+        return false;
+    }
 
-    // Step 2: Compute withdrawable
-    let withdrawable = fees.min(state.vault_balance);
-    assert!(withdrawable > 0, "withdrawable must be > 0");
+    // Step 2: Compute withdrawable (with lender-claims cap)
+    let mut withdrawable = fees.min(state.vault_balance);
+    if state.market.scaled_total_supply() > 0 {
+        let sf = state.market.scale_factor();
+        let total_norm = state.market.scaled_total_supply()
+            .checked_mul(sf).unwrap()
+            .checked_div(WAD).unwrap();
+        let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
+        let safe_max = state.vault_balance.saturating_sub(lender_claims);
+        withdrawable = withdrawable.min(safe_max);
+    }
+    if withdrawable == 0 {
+        return false;
+    }
 
     // Step 3: Update state
     state.vault_balance -= withdrawable;
     state.market.set_accrued_protocol_fees(fees - withdrawable);
+    true
 }
 
 /// TLA+ ReSettle
@@ -1072,6 +1088,21 @@ fn tla_collect_fees() {
     // Advance significant time to accrue fees (fees depend on supply and time)
     action_tick(&mut state, 10_000_000); // ~115 days
 
+    // COAL-C01: fees are only collectable when vault > lender claims.
+    // Simulate borrower interest repayment funding the vault so fees are collectable.
+    {
+        let mut tmp = state.market;
+        accrue_interest(&mut tmp, &state.config, state.current_time).unwrap();
+        let sf = tmp.scale_factor();
+        let total_norm = tmp.scaled_total_supply()
+            .checked_mul(sf).unwrap() / WAD;
+        let lender_claims = u64::try_from(total_norm).unwrap();
+        let needed = u128::from(lender_claims) + u128::from(tmp.accrued_protocol_fees());
+        if u128::from(state.vault_balance) < needed {
+            state.vault_balance = u64::try_from(needed).unwrap();
+        }
+    }
+
     let pre_collect = state.clone();
     let mut oracle_market = pre_collect.market;
     accrue_interest(
@@ -1087,16 +1118,26 @@ fn tla_collect_fees() {
         "fee accrual should be positive in this scenario"
     );
 
-    let expected_withdrawable = fees_after_accrual.min(pre_collect.vault_balance);
+    let mut expected_withdrawable = fees_after_accrual.min(pre_collect.vault_balance);
+    // COAL-C01: apply lender-claims cap using post-accrual scale factor
+    if oracle_market.scaled_total_supply() > 0 {
+        let sf = oracle_market.scale_factor();
+        let total_norm = oracle_market.scaled_total_supply()
+            .checked_mul(sf).unwrap()
+            .checked_div(WAD).unwrap();
+        let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
+        let safe_max = pre_collect.vault_balance.saturating_sub(lender_claims);
+        expected_withdrawable = expected_withdrawable.min(safe_max);
+    }
     assert!(
         expected_withdrawable > 0,
         "collect_fees precondition requires positive withdrawable"
     );
 
-    action_collect_fees(&mut state);
+    assert!(action_collect_fees(&mut state));
 
     // TLA+ CollectFees postconditions:
-    // withdrawable = min(fees, vault_balance)
+    // withdrawable = min(fees, vault_balance) capped by lender claims
     assert_eq!(
         state.vault_balance,
         pre_collect.vault_balance - expected_withdrawable
@@ -1696,19 +1737,31 @@ fn tla_invariant_fees_non_negative() {
             pre_collect.current_time,
         )
         .unwrap();
-        let withdrawable = oracle_market
+        let mut withdrawable = oracle_market
             .accrued_protocol_fees()
             .min(pre_collect.vault_balance);
+        // COAL-C01: apply lender-claims cap
+        if oracle_market.scaled_total_supply() > 0 {
+            let sf = oracle_market.scale_factor();
+            let total_norm = oracle_market.scaled_total_supply()
+                .checked_mul(sf).unwrap()
+                .checked_div(WAD).unwrap();
+            let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
+            let safe_max = pre_collect.vault_balance.saturating_sub(lender_claims);
+            withdrawable = withdrawable.min(safe_max);
+        }
 
-        action_collect_fees(&mut state);
-        assert_eq!(
-            state.market.accrued_protocol_fees(),
-            oracle_market.accrued_protocol_fees() - withdrawable
-        );
-        assert_eq!(
-            state.vault_balance,
-            pre_collect.vault_balance - withdrawable
-        );
+        if withdrawable > 0 {
+            assert!(action_collect_fees(&mut state));
+            assert_eq!(
+                state.market.accrued_protocol_fees(),
+                oracle_market.accrued_protocol_fees() - withdrawable
+            );
+            assert_eq!(
+                state.vault_balance,
+                pre_collect.vault_balance - withdrawable
+            );
+        }
         check_fees_non_negative(&state);
     }
 
@@ -2137,13 +2190,22 @@ fn try_execute_action(state: &mut TlaState, action: &TlaAction) -> bool {
             if test_market.accrued_protocol_fees() == 0 {
                 return false;
             }
-            let withdrawable = test_market.accrued_protocol_fees().min(state.vault_balance);
+            let mut withdrawable = test_market.accrued_protocol_fees().min(state.vault_balance);
+            // COAL-C01: apply lender-claims cap
+            if test_market.scaled_total_supply() > 0 {
+                let sf = test_market.scale_factor();
+                let total_norm = test_market.scaled_total_supply()
+                    .checked_mul(sf).unwrap()
+                    .checked_div(WAD).unwrap();
+                let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
+                let safe_max = state.vault_balance.saturating_sub(lender_claims);
+                withdrawable = withdrawable.min(safe_max);
+            }
             if withdrawable == 0 {
                 return false;
             }
 
-            action_collect_fees(state);
-            true
+            action_collect_fees(state)
         },
         TlaAction::ReSettle => {
             if state.market.scale_factor() == 0
@@ -2835,9 +2897,10 @@ fn tla_withdraw_excess() {
     assert_eq!(state.market.settlement_factor_wad(), WAD);
     assert_eq!(state.market.scaled_total_supply(), 0);
 
-    // Collect any remaining fees
+    // Collect any remaining fees (COAL-C01: may be blocked by lender-claims cap,
+    // but supply == 0 here so cap doesn't apply)
     if state.market.accrued_protocol_fees() > 0 && state.vault_balance > 0 {
-        action_collect_fees(&mut state);
+        assert!(action_collect_fees(&mut state));
     }
 
     // Preconditions for WithdrawExcess must hold — assert rather than skip

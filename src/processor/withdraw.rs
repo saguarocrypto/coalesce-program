@@ -184,17 +184,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
             return Err(LendingError::InvalidMint.into());
         }
         let vault_balance = u128::from(vault_token.amount());
-        let fees_reserved = {
-            let fees = u128::from(market.accrued_protocol_fees());
-            if vault_balance < fees {
-                vault_balance
-            } else {
-                fees
-            }
-        };
-        let available_for_lenders = vault_balance
-            .checked_sub(fees_reserved)
-            .ok_or(LendingError::MathOverflow)?;
+        // COAL-C01: Compute settlement factor from full vault balance.
+        // Fee reservation is removed — the collect_fees distress guard (SR-057)
+        // already prevents fee extraction when settlement_factor < WAD, so
+        // reserving fees here only harms lenders in distressed markets.
+        let available_for_lenders = vault_balance;
 
         let total_normalized = market
             .scaled_total_supply()

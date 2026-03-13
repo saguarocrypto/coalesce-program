@@ -964,10 +964,10 @@ async fn test_withdraw_no_balance() {
     let pos_before =
         common::parse_lender_position(&common::get_account_data(&mut ctx, &pos_pda).await);
     let vault_before = common::get_token_balance(&mut ctx, &vault).await;
-    let (projected_scale_factor, projected_fees) =
+    let (projected_scale_factor, _projected_fees) =
         project_scale_and_fees_for_withdraw(&market_before, fee_rate_bps, withdraw_ts);
-    let fees_reserved = core::cmp::min(vault_before, projected_fees);
-    let available_for_lenders = u128::from(vault_before - fees_reserved);
+    // COAL-C01: Settlement factor uses full vault balance, no fee reservation.
+    let available_for_lenders = u128::from(vault_before);
     let total_normalized = market_before
         .scaled_total_supply
         .checked_mul(projected_scale_factor)
@@ -1455,10 +1455,10 @@ async fn test_withdraw_underfunded_vault() {
     let (pos_pda, _) = common::get_lender_position_pda(&market, &lender.pubkey());
     let vault_before = common::get_token_balance(&mut ctx, &vault).await;
     let market_before = common::parse_market(&common::get_account_data(&mut ctx, &market).await);
-    let (projected_scale_factor, projected_fees) =
+    let (projected_scale_factor, _projected_fees) =
         project_scale_and_fees_for_withdraw(&market_before, fee_rate_bps, withdraw_ts);
-    let fees_reserved = core::cmp::min(vault_before, projected_fees);
-    let available_for_lenders = u128::from(vault_before - fees_reserved);
+    // COAL-C01: Settlement factor uses full vault balance, no fee reservation.
+    let available_for_lenders = u128::from(vault_before);
     let total_normalized = market_before
         .scaled_total_supply
         .checked_mul(projected_scale_factor)

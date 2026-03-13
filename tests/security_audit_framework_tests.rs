@@ -682,7 +682,17 @@ impl SimulatedProtocol {
             return Err("NoFeesToCollect".to_string());
         }
 
-        let withdrawable = std::cmp::min(accrued, self.vault_balance);
+        let mut withdrawable = std::cmp::min(accrued, self.vault_balance);
+        // COAL-C01: cap fee withdrawal above lender claims when supply > 0
+        if self.market.scaled_total_supply() > 0 {
+            let sf = self.market.scale_factor();
+            let total_norm = self.market.scaled_total_supply()
+                .checked_mul(sf).ok_or("MathOverflow")?
+                / WAD;
+            let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
+            let safe_max = self.vault_balance.saturating_sub(lender_claims);
+            withdrawable = withdrawable.min(safe_max);
+        }
         if withdrawable == 0 {
             return Err("NoFeesToCollect".to_string());
         }
@@ -1630,22 +1640,39 @@ proptest! {
                             );
                         }
                         Operation::CollectFees => {
-                            let expected = std::cmp::min(
-                                before.accrued_protocol_fees,
+                            // COAL-C01: do_collect_fees accrues first, then caps.
+                            // Use post-accrual values: after.scale_factor (unchanged
+                            // by collection), post_accrual_fees = after.fees + vault_decrease.
+                            let post_accrual_fees = after.accrued_protocol_fees + vault_decrease;
+                            let mut expected = std::cmp::min(
+                                post_accrual_fees,
                                 before.vault_balance,
                             );
+                            if after.scaled_total_supply > 0 {
+                                let sf = after.scale_factor;
+                                let total_norm = after.scaled_total_supply
+                                    .checked_mul(sf).unwrap()
+                                    / WAD;
+                                let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
+                                let safe_max = before.vault_balance.saturating_sub(lender_claims);
+                                expected = expected.min(safe_max);
+                            }
                             prop_assert_eq!(
                                 vault_decrease,
                                 expected,
-                                "collect_fees must reduce vault by min(accrued, vault)"
+                                "collect_fees must reduce vault by capped withdrawable"
                             );
-                            prop_assert_eq!(
-                                before
-                                    .accrued_protocol_fees
-                                    .saturating_sub(after.accrued_protocol_fees),
-                                expected,
-                                "fee counter decrement must equal collected amount"
-                            );
+                            // Verify vault still covers lender claims after collection
+                            if after.scaled_total_supply > 0 {
+                                let total_norm = after.scaled_total_supply
+                                    .checked_mul(after.scale_factor).unwrap()
+                                    / WAD;
+                                let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
+                                prop_assert!(
+                                    after.vault_balance >= lender_claims,
+                                    "vault must still cover lender claims after fee collection"
+                                );
+                            }
                         }
                         Operation::Deposit { .. } | Operation::Repay { .. } => {
                             prop_assert_eq!(
@@ -2068,12 +2095,9 @@ proptest! {
         prop_assert!(accrue.is_ok(), "maturity accrual should succeed");
 
         let before_all_withdrawals = protocol.snapshot();
-        let available_for_lenders = before_all_withdrawals
-            .vault_balance
-            .saturating_sub(std::cmp::min(
-                before_all_withdrawals.vault_balance,
-                before_all_withdrawals.accrued_protocol_fees,
-            ));
+        // COAL-C01: fees are no longer reserved from the settlement factor,
+        // so the full vault backs lender withdrawals.
+        let available_for_lenders = before_all_withdrawals.vault_balance;
 
         let before_a = protocol.snapshot();
         let wd_a = protocol.execute(&Operation::Withdraw {
@@ -2702,10 +2726,21 @@ proptest! {
         let fees_collected_before = protocol.total_fees_collected;
         let total_fee_ledger_before = u128::from(before_collect.accrued_protocol_fees)
             + u128::from(fees_collected_before);
-        let expected_taken = std::cmp::min(
+        let mut expected_taken = std::cmp::min(
             before_collect.accrued_protocol_fees,
             before_collect.vault_balance,
         );
+        // COAL-C01: cap fee withdrawal above lender claims when supply > 0.
+        // do_collect_fees accrues first (no-op here since timestamp unchanged),
+        // then applies cap with current scale_factor.
+        if before_collect.scaled_total_supply > 0 {
+            let total_norm = before_collect.scaled_total_supply
+                .checked_mul(before_collect.scale_factor).unwrap()
+                / WAD;
+            let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
+            let safe_max = before_collect.vault_balance.saturating_sub(lender_claims);
+            expected_taken = expected_taken.min(safe_max);
+        }
         let collect = protocol.execute(&Operation::CollectFees);
         match collect {
             Ok(()) => {

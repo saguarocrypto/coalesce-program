@@ -92,11 +92,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     }
 
     // SR-113: Block fee collection while lenders have pending withdrawals,
-    // UNLESS settlement_factor == WAD (fully solvent). When the settlement
-    // factor is WAD, the vault provably holds enough for all remaining lender
-    // payouts AND accrued fees — so collecting fees cannot harm lenders.
-    // The factor is immutable at WAD (re_settle enforces monotonicity and caps
-    // at WAD) and no new interest accrues post-maturity.
+    // UNLESS settlement_factor == WAD (fully solvent). When sf == WAD the
+    // market is solvent, but the vault may not hold surplus above lender
+    // claims (COAL-C01 removed fee reservation from settlement). The
+    // lender-claims cap below (applied after computing withdrawable)
+    // prevents draining below obligations.
     if market.scaled_total_supply() > 0 && settlement_factor != WAD {
         return Err(LendingError::LendersPendingWithdrawals.into());
     }
@@ -133,6 +133,27 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
 
     let vault_balance = vault_token.amount();
     let withdrawable = core::cmp::min(accrued_fees, vault_balance);
+
+    // COAL-C01 compensation: when lenders still have claims, cap fee
+    // withdrawal to vault surplus above total lender obligations. Before
+    // COAL-C01, fee reservation in settlement kept sf < WAD, so SR-057
+    // blocked this path entirely. After COAL-C01 sf can reach WAD with
+    // no surplus for fees — this guard prevents vault drain.
+    let withdrawable = if market.scaled_total_supply() > 0 {
+        let sf = market.scale_factor();
+        let total_normalized = market
+            .scaled_total_supply()
+            .checked_mul(sf)
+            .ok_or(LendingError::MathOverflow)?
+            .checked_div(WAD)
+            .ok_or(LendingError::MathOverflow)?;
+        let lender_claims =
+            u64::try_from(total_normalized).map_err(|_| LendingError::MathOverflow)?;
+        let safe_max = vault_balance.saturating_sub(lender_claims);
+        core::cmp::min(withdrawable, safe_max)
+    } else {
+        withdrawable
+    };
 
     if withdrawable == 0 {
         return Err(LendingError::NoFeesToCollect.into());
