@@ -545,6 +545,39 @@ pub fn build_re_settle(market: &Pubkey, vault: &Pubkey) -> Instruction {
     }
 }
 
+/// ForceClosePosition (disc 18)
+/// data = [18u8] (no additional data)
+///
+/// Borrower force-closes a lender position after maturity + grace period.
+pub fn build_force_close_position(
+    market: &Pubkey,
+    borrower: &Pubkey,
+    lender: &Pubkey,
+    escrow_token_account: &Pubkey,
+) -> Instruction {
+    let (vault, _) = get_vault_pda(market);
+    let (market_authority, _) = get_market_authority_pda(market);
+    let (protocol_config, _) = get_protocol_config_pda();
+    let (lender_position, _) = get_lender_position_pda(market, lender);
+
+    let data = vec![18u8]; // discriminator only
+
+    Instruction {
+        program_id: program_id(),
+        accounts: vec![
+            AccountMeta::new(*market, false),                      // market (writable)
+            AccountMeta::new_readonly(*borrower, true),            // borrower (signer)
+            AccountMeta::new(lender_position, false),              // lender_position (writable)
+            AccountMeta::new(vault, false),                        // vault (writable)
+            AccountMeta::new(*escrow_token_account, false),        // escrow_token_account (writable)
+            AccountMeta::new_readonly(market_authority, false),    // market_authority PDA
+            AccountMeta::new_readonly(protocol_config, false),     // protocol_config PDA
+            AccountMeta::new_readonly(spl_token::id(), false),     // token_program
+        ],
+        data,
+    }
+}
+
 /// WithdrawExcess (disc 11)
 /// data = [11u8] (no additional data)
 ///
@@ -553,10 +586,12 @@ pub fn build_withdraw_excess(
     market: &Pubkey,
     borrower: &Pubkey,
     borrower_token_account: &Pubkey,
+    blacklist_program_id: &Pubkey,
 ) -> Instruction {
     let (vault, _) = get_vault_pda(market);
     let (market_authority, _) = get_market_authority_pda(market);
     let (protocol_config, _) = get_protocol_config_pda();
+    let (blacklist_check, _) = get_blacklist_pda(blacklist_program_id, borrower);
 
     let data = vec![11u8]; // discriminator only
 
@@ -570,6 +605,7 @@ pub fn build_withdraw_excess(
             AccountMeta::new_readonly(market_authority, false), // market_authority PDA
             AccountMeta::new_readonly(spl_token::id(), false), // token_program
             AccountMeta::new_readonly(protocol_config, false), // protocol_config PDA
+            AccountMeta::new_readonly(blacklist_check, false), // blacklist_check
         ],
         data,
     }
@@ -970,6 +1006,7 @@ pub struct ParsedMarket {
     pub last_accrual_timestamp: i64,
     pub settlement_factor_wad: u128,
     pub bump: u8,
+    pub haircut_accumulator: u64,
 }
 
 pub fn parse_market(data: &[u8]) -> ParsedMarket {
@@ -1010,6 +1047,7 @@ pub fn parse_market(data: &[u8]) -> ParsedMarket {
         last_accrual_timestamp: i64::from_le_bytes(d[195..203].try_into().unwrap()),
         settlement_factor_wad: u128::from_le_bytes(d[203..219].try_into().unwrap()),
         bump: d[219],
+        haircut_accumulator: u64::from_le_bytes(d[220..228].try_into().unwrap()),
     }
 }
 
