@@ -300,7 +300,9 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         .ok_or(LendingError::MathOverflow)?;
     market.set_scaled_total_supply(new_scaled_total);
 
-    // COAL-M01: Decrement total_deposited so withdrawals free up cap space.
+    // COAL-M01: Decrement total_deposited to keep the counter consistent with
+    // the actual principal held. Deposits are only allowed before maturity, so
+    // this does not free cap space for new deposits.
     let new_total_deposited = market.total_deposited().saturating_sub(payout);
     market.set_total_deposited(new_total_deposited);
 

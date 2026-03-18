@@ -592,6 +592,7 @@ pub fn build_withdraw_excess(
     let (market_authority, _) = get_market_authority_pda(market);
     let (protocol_config, _) = get_protocol_config_pda();
     let (blacklist_check, _) = get_blacklist_pda(blacklist_program_id, borrower);
+    let (borrower_whitelist, _) = get_borrower_whitelist_pda(borrower);
 
     let data = vec![11u8]; // discriminator only
 
@@ -606,6 +607,7 @@ pub fn build_withdraw_excess(
             AccountMeta::new_readonly(spl_token::id(), false), // token_program
             AccountMeta::new_readonly(protocol_config, false), // protocol_config PDA
             AccountMeta::new_readonly(blacklist_check, false), // blacklist_check
+            AccountMeta::new_readonly(borrower_whitelist, false), // borrower_whitelist
         ],
         data,
     }
