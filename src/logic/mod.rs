@@ -1,4 +1,5 @@
 pub mod events;
+pub mod haircuts;
 pub mod interest;
 pub mod validation;
 

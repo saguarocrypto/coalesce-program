@@ -2589,6 +2589,12 @@ async fn test_close_lender_position_fails_when_paused() {
 
     ctx.last_blockhash = ctx.banks_client.get_latest_blockhash().await.unwrap();
 
+    // COAL-H01: If the withdrawal created a haircut (distressed market from
+    // interest accrual), close will fail with PositionNotEmpty (34) even after
+    // unpause. That is correct behavior — the lender must claim the haircut first.
+    let pos_check = get_account_data(&mut ctx, &lender_position_pda).await;
+    let pos_parsed = parse_lender_position(&pos_check);
+
     let close_ix = build_close_lender_position(&market, &lender.pubkey());
     let tx = Transaction::new_signed_with_payer(
         &[
@@ -2599,17 +2605,21 @@ async fn test_close_lender_position_fails_when_paused() {
         &[&ctx.payer, &lender],
         ctx.last_blockhash,
     );
-    ctx.banks_client
-        .process_transaction(tx)
-        .await
-        .expect("close_lender_position should succeed after unpause");
+    let result = ctx.banks_client.process_transaction(tx).await;
 
-    // Verify position account is closed
-    let pos_data = try_get_account_data(&mut ctx, &lender_position_pda).await;
-    assert!(
-        pos_data.is_none(),
-        "position should be closed after unpause"
-    );
+    if pos_parsed.haircut_owed > 0 {
+        // Distressed — close still blocked by pending haircut
+        let err = result.unwrap_err();
+        assert_custom_error(&Err(err.unwrap()), 34);
+    } else {
+        // Non-distressed — close should succeed
+        result.expect("close_lender_position should succeed after unpause");
+        let pos_data = try_get_account_data(&mut ctx, &lender_position_pda).await;
+        assert!(
+            pos_data.is_none(),
+            "position should be closed after unpause"
+        );
+    }
 }
 
 #[tokio::test]

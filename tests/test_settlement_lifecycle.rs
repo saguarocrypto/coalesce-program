@@ -479,12 +479,14 @@ async fn test_re_settle_monotonically_increases() {
 
         advance_clock_past(&mut ctx, parsed.maturity_timestamp + 602).await;
 
+        let (haircut_state, _) = get_haircut_state_pda(&s.market);
         let rs = Instruction {
             program_id: program_id(),
             accounts: vec![
                 solana_sdk::instruction::AccountMeta::new(s.market, false),
                 solana_sdk::instruction::AccountMeta::new_readonly(vault, false),
                 solana_sdk::instruction::AccountMeta::new_readonly(protocol_config, false),
+                solana_sdk::instruction::AccountMeta::new_readonly(haircut_state, false),
             ],
             data: vec![9u8, i as u8], // disc + nonce to avoid duplicate tx signatures
         };

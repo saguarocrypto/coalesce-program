@@ -168,8 +168,12 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
     }
 
     let vault_balance = vault_token.amount();
-    // COAL-H01: Subtract haircut accumulator to prevent borrower from sweeping
-    // unpaid lender haircut value that remains in the vault after force-close.
+    // COAL-H01: Subtract the exact unpaid haircut reserve.
+    //
+    // Unlike `re_settle`, borrower sweep logic should treat
+    // `haircut_accumulator` as unavailable balance. Those tokens may already be
+    // earmarked for prior withdrawers whose claims will be released later as SF
+    // improves.
     let haircut_reserved = market.haircut_accumulator();
     let excess_amount = vault_balance.saturating_sub(haircut_reserved);
     if excess_amount == 0 {

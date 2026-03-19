@@ -3,15 +3,15 @@ use pinocchio::{AccountView, Address, ProgramResult};
 use solana_program_log::log;
 
 use crate::constants::{
-    DISC_LENDER_POSITION, DISC_MARKET, DISC_PROTOCOL_CONFIG, SEED_LENDER, SEED_MARKET_AUTHORITY,
-    SETTLEMENT_GRACE_PERIOD, WAD,
+    DISC_HAIRCUT_STATE, DISC_LENDER_POSITION, DISC_MARKET, DISC_PROTOCOL_CONFIG, SEED_HAIRCUT_STATE,
+    SEED_LENDER, SEED_MARKET_AUTHORITY, SETTLEMENT_GRACE_PERIOD, WAD,
 };
 use crate::error::LendingError;
 use crate::logic::interest::accrue_interest;
 use crate::logic::validation::{
     validate_market_authority, validate_market_pda, validate_protocol_config_pda,
 };
-use crate::state::{LenderPosition, Market, ProtocolConfig};
+use crate::state::{HaircutState, LenderPosition, Market, ProtocolConfig};
 
 /// ForceClosePosition (disc 18)
 /// Borrower force-closes a lender position after maturity + grace period.
@@ -20,7 +20,7 @@ use crate::state::{LenderPosition, Market, ProtocolConfig};
 /// Enables withdraw_excess to succeed when dust, lost wallets, or blacklisted
 /// lenders prevent voluntary withdrawal.
 pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> ProgramResult {
-    if accounts.len() < 8 {
+    if accounts.len() < 9 {
         return Err(ProgramError::NotEnoughAccountKeys);
     }
     let market_account = &accounts[0];
@@ -31,6 +31,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
     let market_authority = &accounts[5];
     let protocol_config_account = &accounts[6];
     let token_program = &accounts[7];
+    let haircut_state_account = &accounts[8];
 
     // Validate token program
     if token_program.address() != &pinocchio_token::ID {
@@ -235,16 +236,87 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
     // Validate market authority PDA for CPI signing
     validate_market_authority(market_authority, market_account, market, program_id)?;
 
-    // COAL-H01: Track haircut gap during distress (same logic as withdraw)
+    // COAL-H01: Track haircut gap during distress.
+    // Same state transition as withdraw.rs — see there for full rationale.
     if settlement_factor < WAD {
         let entitled = u64::try_from(normalized_amount).map_err(|_| LendingError::MathOverflow)?;
         let gap = entitled.saturating_sub(payout);
         if gap > 0 {
+            // Validate and borrow HaircutState PDA
+            let (expected_haircut_pda, _) = Address::find_program_address(
+                &[SEED_HAIRCUT_STATE, market_account.address().as_ref()],
+                program_id,
+            );
+            if haircut_state_account.address() != &expected_haircut_pda {
+                return Err(LendingError::InvalidPDA.into());
+            }
+            if !haircut_state_account.owned_by(program_id) {
+                return Err(LendingError::InvalidAccountOwner.into());
+            }
+            // SAFETY: This is the only mutable borrow of this account in this instruction.
+            let hs_data = unsafe { haircut_state_account.borrow_unchecked_mut() };
+            let haircut_state: &mut HaircutState = bytemuck::try_from_bytes_mut(hs_data)
+                .map_err(|_| ProgramError::InvalidAccountData)?;
+            if haircut_state.discriminator != DISC_HAIRCUT_STATE {
+                return Err(ProgramError::InvalidAccountData);
+            }
+            if haircut_state.market != *market_account.address().as_ref() {
+                return Err(LendingError::InvalidPDA.into());
+            }
+
+            // Step 1: Remove old contribution from HaircutState
+            let existing_owed = position.haircut_owed();
+            let existing_sf = position.withdrawal_sf();
+            if existing_owed > 0 {
+                let (old_w, old_o) =
+                    crate::logic::haircuts::position_contribution(existing_owed, existing_sf)?;
+                let w_sum = haircut_state.claim_weight_sum().saturating_sub(old_w);
+                let o_sum = haircut_state.claim_offset_sum().saturating_sub(old_o);
+                haircut_state.set_claim_weight_sum(w_sum);
+                haircut_state.set_claim_offset_sum(o_sum);
+            }
+
+            // Step 2: Rebase existing haircut if SF changed
+            let rebased_owed = if existing_owed > 0 && existing_sf != settlement_factor {
+                let remaining =
+                    crate::logic::haircuts::rebase_remaining_owed(existing_owed, existing_sf, settlement_factor)?;
+                let recovered = existing_owed.saturating_sub(remaining);
+                if recovered > 0 {
+                    let new_acc = market.haircut_accumulator().saturating_sub(recovered);
+                    market.set_haircut_accumulator(new_acc);
+                }
+                remaining
+            } else {
+                existing_owed
+            };
+
+            // Step 3: Add new gap
+            let new_owed = rebased_owed
+                .checked_add(gap)
+                .ok_or(LendingError::MathOverflow)?;
+            position.set_haircut_owed(new_owed);
+            position.set_withdrawal_sf(settlement_factor);
+
+            // Step 4: Update market accumulator
             let new_acc = market
                 .haircut_accumulator()
                 .checked_add(gap)
                 .ok_or(LendingError::MathOverflow)?;
             market.set_haircut_accumulator(new_acc);
+
+            // Step 5: Add new contribution to HaircutState
+            let (new_w, new_o) =
+                crate::logic::haircuts::position_contribution(new_owed, settlement_factor)?;
+            let w_sum = haircut_state
+                .claim_weight_sum()
+                .checked_add(new_w)
+                .ok_or(LendingError::MathOverflow)?;
+            let o_sum = haircut_state
+                .claim_offset_sum()
+                .checked_add(new_o)
+                .ok_or(LendingError::MathOverflow)?;
+            haircut_state.set_claim_weight_sum(w_sum);
+            haircut_state.set_claim_offset_sum(o_sum);
         }
     }
 

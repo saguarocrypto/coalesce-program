@@ -173,6 +173,9 @@ pub enum LendingError {
 
     /// ERR-043: Payout is below minimum specified by caller (slippage protection).
     PayoutBelowMinimum = 42,
+
+    /// ERR-044: Lender has no haircut claim to recover.
+    NoHaircutToClaim = 43,
 }
 
 impl From<LendingError> for ProgramError {
@@ -244,16 +247,17 @@ mod tests {
         assert_eq!(LendingError::FeesNotCollected as u32, 39);
         assert_eq!(LendingError::NoExcessToWithdraw as u32, 40);
 
-        // OPERATIONAL ERRORS (41-42)
+        // OPERATIONAL ERRORS (41-43)
         assert_eq!(LendingError::MathOverflow as u32, 41);
         assert_eq!(LendingError::PayoutBelowMinimum as u32, 42);
+        assert_eq!(LendingError::NoHaircutToClaim as u32, 43);
     }
 
-    /// Ensure total number of variants is 43 (0-42).
+    /// Ensure total number of variants is 44 (0-43).
     #[test]
     fn error_variant_count() {
-        // PayoutBelowMinimum is the last variant at index 42
-        assert_eq!(LendingError::PayoutBelowMinimum as u32, 42);
+        // NoHaircutToClaim is the last variant at index 43
+        assert_eq!(LendingError::NoHaircutToClaim as u32, 43);
     }
 
     /// Ensure From<LendingError> for ProgramError produces Custom(N).

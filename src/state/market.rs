@@ -48,9 +48,19 @@ pub struct Market {
     pub settlement_factor_wad: [u8; 16],
     /// Market PDA bump.
     pub bump: u8,
-    /// Cumulative haircut gap from early withdrawals in distressed markets (COAL-H01).
-    /// Subtracted from available_for_lenders in re_settle to prevent recycled
-    /// haircut tokens from inflating the settlement factor.
+    /// Exact unpaid haircut still owed to prior withdrawers.
+    ///
+    /// This is the sum of `position.haircut_owed` across all lender positions.
+    /// It is:
+    /// - incremented when a distressed withdrawal pays less than full entitlement,
+    /// - decremented when the market improves and those lenders claim recovery,
+    /// - used by `withdraw_excess` and `collect_fees` to keep reserved value in
+    ///   the vault.
+    ///
+    /// It is intentionally NOT used by `re_settle`. Settlement improvement is
+    /// computed from the conservative `HaircutState` aggregate so borrower
+    /// repayments remain visible to the solver instead of being hidden behind a
+    /// direct subtraction from vault balance.
     pub haircut_accumulator: [u8; 8],
     /// Reserved.
     pub padding: [u8; 13],

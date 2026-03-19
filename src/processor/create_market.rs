@@ -3,19 +3,20 @@ use pinocchio::{AccountView, Address, ProgramResult};
 use solana_program_log::log;
 
 use crate::constants::{
-    DISC_BORROWER_WL, DISC_MARKET, DISC_PROTOCOL_CONFIG, MARKET_SIZE, MAX_ANNUAL_INTEREST_BPS,
-    MAX_MATURITY_DELTA, MIN_MATURITY_DELTA, SEED_BORROWER_WHITELIST, SEED_MARKET,
-    SEED_MARKET_AUTHORITY, SEED_PROTOCOL_CONFIG, SEED_VAULT, SETTLEMENT_GRACE_PERIOD,
-    SPL_TOKEN_ACCOUNT_SIZE, USDC_DECIMALS, WAD,
+    DISC_BORROWER_WL, DISC_HAIRCUT_STATE, DISC_MARKET, DISC_PROTOCOL_CONFIG, HAIRCUT_STATE_SIZE,
+    MARKET_SIZE, MAX_ANNUAL_INTEREST_BPS, MAX_MATURITY_DELTA, MIN_MATURITY_DELTA,
+    SEED_BORROWER_WHITELIST, SEED_HAIRCUT_STATE, SEED_MARKET, SEED_MARKET_AUTHORITY,
+    SEED_PROTOCOL_CONFIG, SEED_VAULT, SETTLEMENT_GRACE_PERIOD, SPL_TOKEN_ACCOUNT_SIZE,
+    USDC_DECIMALS, WAD,
 };
 use crate::error::LendingError;
 use crate::logic::validation::{check_blacklist, get_unix_timestamp};
-use crate::state::{BorrowerWhitelist, Market, ProtocolConfig};
+use crate::state::{BorrowerWhitelist, HaircutState, Market, ProtocolConfig};
 
 /// CreateMarket (disc 2)
 /// Create a new lending market with fixed terms.
 pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> ProgramResult {
-    if accounts.len() < 10 {
+    if accounts.len() < 11 {
         return Err(ProgramError::NotEnoughAccountKeys);
     }
     let market_account = &accounts[0];
@@ -28,6 +29,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     let blacklist_check = &accounts[7];
     // accounts[8] = system_program
     // accounts[9] = token_program
+    let haircut_state_account = &accounts[10];
 
     // Parse instruction data: nonce(8) + annual_interest_bps(2) + maturity_timestamp(8) + max_total_supply(8)
     if data.len() < 26 {
@@ -244,6 +246,46 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         owner: &expected_auth_pda,
     }
     .invoke()?;
+
+    // --- Create HaircutState PDA ---
+    // COAL-H01: Per-market aggregate for the conservative re_settle solver.
+    let (expected_haircut_pda, haircut_bump) = Address::find_program_address(
+        &[SEED_HAIRCUT_STATE, market_account.address().as_ref()],
+        program_id,
+    );
+    if haircut_state_account.address() != &expected_haircut_pda {
+        return Err(LendingError::InvalidPDA.into());
+    }
+    let haircut_bump_ref = [haircut_bump];
+    let haircut_signer_seeds = [
+        pinocchio::cpi::Seed::from(SEED_HAIRCUT_STATE),
+        pinocchio::cpi::Seed::from(market_account.address().as_ref()),
+        pinocchio::cpi::Seed::from(&haircut_bump_ref),
+    ];
+    pinocchio_system::create_account_with_minimum_balance_signed(
+        haircut_state_account,
+        HAIRCUT_STATE_SIZE,
+        program_id,
+        borrower,
+        None,
+        &[pinocchio::cpi::Signer::from(&haircut_signer_seeds)],
+    )?;
+
+    // Initialize HaircutState fields
+    // SAFETY: This is the only mutable borrow of this account in this instruction.
+    // Account data length is verified by bytemuck::try_from_bytes_mut.
+    let haircut_data = unsafe { haircut_state_account.borrow_unchecked_mut() };
+    let haircut_state: &mut HaircutState =
+        bytemuck::try_from_bytes_mut(haircut_data).map_err(|_| ProgramError::InvalidAccountData)?;
+    haircut_state
+        .discriminator
+        .copy_from_slice(&DISC_HAIRCUT_STATE);
+    haircut_state.version = 1;
+    haircut_state
+        .market
+        .copy_from_slice(market_account.address().as_ref());
+    haircut_state.bump = haircut_bump;
+    // claim_weight_sum and claim_offset_sum are zero from create.
 
     // --- Write market data ---
     // SAFETY: This is the only mutable borrow of this account in this instruction.

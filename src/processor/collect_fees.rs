@@ -134,11 +134,13 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     let vault_balance = vault_token.amount();
     let withdrawable = core::cmp::min(accrued_fees, vault_balance);
 
-    // COAL-C01 compensation: when lenders still have claims, cap fee
-    // withdrawal to vault surplus above total lender obligations. Before
-    // COAL-C01, fee reservation in settlement kept sf < WAD, so SR-057
-    // blocked this path entirely. After COAL-C01 sf can reach WAD with
-    // no surplus for fees — this guard prevents vault drain.
+    // COAL-C01 compensation: cap fee withdrawal to vault surplus above total
+    // lender obligations.
+    //
+    // COAL-H01: Also subtract `haircut_accumulator`. Those tokens are not
+    // general surplus: they are exact unpaid value still reserved for lenders
+    // who already withdrew in distress and are waiting for later recovery.
+    let haircut_reserved = market.haircut_accumulator();
     let withdrawable = if market.scaled_total_supply() > 0 {
         let sf = market.scale_factor();
         let total_normalized = market
@@ -149,10 +151,14 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
             .ok_or(LendingError::MathOverflow)?;
         let lender_claims =
             u64::try_from(total_normalized).map_err(|_| LendingError::MathOverflow)?;
-        let safe_max = vault_balance.saturating_sub(lender_claims);
+        let safe_max = vault_balance
+            .saturating_sub(lender_claims)
+            .saturating_sub(haircut_reserved);
         core::cmp::min(withdrawable, safe_max)
     } else {
-        withdrawable
+        // Even with no remaining lenders, protect haircut reserve.
+        let safe_max = vault_balance.saturating_sub(haircut_reserved);
+        core::cmp::min(withdrawable, safe_max)
     };
 
     if withdrawable == 0 {

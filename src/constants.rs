@@ -39,6 +39,7 @@ pub const DISC_PROTOCOL_CONFIG: [u8; 8] = *b"COALPC__";
 pub const DISC_MARKET: [u8; 8] = *b"COALMKT_";
 pub const DISC_LENDER_POSITION: [u8; 8] = *b"COALLPOS";
 pub const DISC_BORROWER_WL: [u8; 8] = *b"COALBWL_";
+pub const DISC_HAIRCUT_STATE: [u8; 8] = *b"COALHCST";
 
 // --- PDA seeds ---
 
@@ -49,6 +50,7 @@ pub const SEED_LENDER: &[u8] = b"lender";
 pub const SEED_VAULT: &[u8] = b"vault";
 pub const SEED_BORROWER_WHITELIST: &[u8] = b"borrower_whitelist";
 pub const SEED_BLACKLIST: &[u8] = b"blacklist";
+pub const SEED_HAIRCUT_STATE: &[u8] = b"haircut_state";
 
 // --- Account sizes ---
 
@@ -56,6 +58,7 @@ pub const PROTOCOL_CONFIG_SIZE: usize = 194;
 pub const MARKET_SIZE: usize = 250;
 pub const LENDER_POSITION_SIZE: usize = 128;
 pub const BORROWER_WHITELIST_SIZE: usize = 96;
+pub const HAIRCUT_STATE_SIZE: usize = 88;
 
 /// SPL Token account size (fixed).
 pub const SPL_TOKEN_ACCOUNT_SIZE: u64 = 165;
@@ -131,6 +134,7 @@ mod tests {
         assert_eq!(MARKET_SIZE, 250);
         assert_eq!(LENDER_POSITION_SIZE, 128);
         assert_eq!(BORROWER_WHITELIST_SIZE, 96);
+        assert_eq!(HAIRCUT_STATE_SIZE, 88);
         assert_eq!(SPL_TOKEN_ACCOUNT_SIZE, 165);
     }
 
@@ -149,5 +153,6 @@ mod tests {
         assert_eq!(SEED_VAULT, b"vault");
         assert_eq!(SEED_BORROWER_WHITELIST, b"borrower_whitelist");
         assert_eq!(SEED_BLACKLIST, b"blacklist");
+        assert_eq!(SEED_HAIRCUT_STATE, b"haircut_state");
     }
 }

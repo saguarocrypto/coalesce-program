@@ -403,6 +403,8 @@ async fn test_force_close_non_borrower_rejected() {
     let (market_authority, _) = common::get_market_authority_pda(&market);
     let (protocol_config, _) = common::get_protocol_config_pda();
 
+    let (haircut_state, _) = common::get_haircut_state_pda(&market);
+
     let fc_ix = solana_sdk::instruction::Instruction {
         program_id: common::program_id(),
         accounts: vec![
@@ -414,6 +416,7 @@ async fn test_force_close_non_borrower_rejected() {
             solana_sdk::instruction::AccountMeta::new_readonly(market_authority, false),
             solana_sdk::instruction::AccountMeta::new_readonly(protocol_config, false),
             solana_sdk::instruction::AccountMeta::new_readonly(spl_token::id(), false),
+            solana_sdk::instruction::AccountMeta::new(haircut_state, false),
         ],
         data: vec![18u8],
     };

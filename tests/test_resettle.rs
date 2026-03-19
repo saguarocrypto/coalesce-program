@@ -69,26 +69,28 @@ fn expected_settlement_factor(
     vault_balance: u64,
     scaled_total_supply: u128,
     scale_factor: u128,
-    haircut_accumulator: u64,
+    _haircut_accumulator: u64,
+    claim_weight_sum: u128,
+    claim_offset_sum: u128,
 ) -> u128 {
     let vault_bal_128 = u128::from(vault_balance);
-    // COAL-C01: No fee reservation.
-    // COAL-H01: Subtract haircut accumulator to prevent recycled inflation.
-    let haircut_128 = u128::from(haircut_accumulator);
-    let available_for_lenders = vault_bal_128.saturating_sub(haircut_128);
     let total_normalized = scaled_total_supply
         .checked_mul(scale_factor)
         .unwrap()
         .checked_div(WAD)
         .unwrap();
 
-    if total_normalized == 0 {
+    // COAL-H01: Conservative re_settle formula.
+    //   new_sf = WAD * (V + O) / (R + W)
+    let denominator = total_normalized + claim_weight_sum;
+    if denominator == 0 {
         WAD
     } else {
-        let raw = available_for_lenders
+        let numerator_inner = vault_bal_128 + claim_offset_sum;
+        let raw = numerator_inner
             .checked_mul(WAD)
             .unwrap()
-            .checked_div(total_normalized)
+            .checked_div(denominator)
             .unwrap();
         let capped = if raw > WAD { WAD } else { raw };
         if capped < 1 {
@@ -296,11 +298,16 @@ async fn test_re_settle_success() {
     let md_pre = common::get_account_data(&mut ctx, &market).await;
     let parsed_pre = common::parse_market(&md_pre);
     let vault_balance_pre = common::get_token_balance(&mut ctx, &vault).await;
+    let (haircut_state_pda, _) = common::get_haircut_state_pda(&market);
+    let hs_data = common::get_account_data(&mut ctx, &haircut_state_pda).await;
+    let hs = common::parse_haircut_state(&hs_data);
     let expected_factor = expected_settlement_factor(
         vault_balance_pre,
         parsed_pre.scaled_total_supply,
         parsed_pre.scale_factor,
         parsed_pre.haircut_accumulator,
+        hs.claim_weight_sum,
+        hs.claim_offset_sum,
     );
     assert!(
         expected_factor > old_factor,
@@ -807,11 +814,16 @@ async fn test_re_settle_not_improved() {
     let md_pre = common::get_account_data(&mut ctx, &market).await;
     let parsed_pre = common::parse_market(&md_pre);
     let vault_balance_pre = common::get_token_balance(&mut ctx, &vault).await;
+    let (haircut_state_pda, _) = common::get_haircut_state_pda(&market);
+    let hs_data = common::get_account_data(&mut ctx, &haircut_state_pda).await;
+    let hs = common::parse_haircut_state(&hs_data);
     let expected_factor = expected_settlement_factor(
         vault_balance_pre,
         parsed_pre.scaled_total_supply,
         parsed_pre.scale_factor,
         parsed_pre.haircut_accumulator,
+        hs.claim_weight_sum,
+        hs.claim_offset_sum,
     );
     assert!(
         expected_factor > parsed.settlement_factor_wad,
@@ -1033,11 +1045,16 @@ async fn test_re_settle_permissionless() {
     let md_pre = common::get_account_data(&mut ctx, &market).await;
     let parsed_pre = common::parse_market(&md_pre);
     let vault_balance_pre = common::get_token_balance(&mut ctx, &vault).await;
+    let (haircut_state_pda, _) = common::get_haircut_state_pda(&market);
+    let hs_data = common::get_account_data(&mut ctx, &haircut_state_pda).await;
+    let hs = common::parse_haircut_state(&hs_data);
     let expected_factor = expected_settlement_factor(
         vault_balance_pre,
         parsed_pre.scaled_total_supply,
         parsed_pre.scale_factor,
         parsed_pre.haircut_accumulator,
+        hs.claim_weight_sum,
+        hs.claim_offset_sum,
     );
     assert!(
         expected_factor > parsed.settlement_factor_wad,
@@ -1322,12 +1339,17 @@ async fn test_re_settle_after_additional_repayment() {
         old_factor
     );
 
-    // Verify new factor via the shared helper (COAL-C01 + COAL-H01 formula)
+    // Verify new factor via the shared helper (COAL-H01 conservative formula)
+    let (haircut_state_pda, _) = common::get_haircut_state_pda(&market);
+    let hs_data = common::get_account_data(&mut ctx, &haircut_state_pda).await;
+    let hs = common::parse_haircut_state(&hs_data);
     let expected_factor = expected_settlement_factor(
         vault_balance,
         scaled_total,
         scale_factor,
         parsed_pre.haircut_accumulator,
+        hs.claim_weight_sum,
+        hs.claim_offset_sum,
     );
 
     assert_eq!(

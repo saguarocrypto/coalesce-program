@@ -1,8 +1,10 @@
 pub mod borrow;
+pub mod claim_haircut;
 pub mod close_lender_position;
 pub mod collect_fees;
 pub mod create_market;
 pub mod deposit;
+pub mod force_claim_haircut;
 pub mod force_close_position;
 pub mod initialize_protocol;
 pub mod re_settle;
@@ -18,10 +20,12 @@ pub mod withdraw;
 pub mod withdraw_excess;
 
 pub use borrow::process as borrow;
+pub use claim_haircut::process as claim_haircut;
 pub use close_lender_position::process as close_lender_position;
 pub use collect_fees::process as collect_fees;
 pub use create_market::process as create_market;
 pub use deposit::process as deposit;
+pub use force_claim_haircut::process as force_claim_haircut;
 pub use force_close_position::process as force_close_position;
 pub use initialize_protocol::process as initialize_protocol;
 pub use re_settle::process as re_settle;

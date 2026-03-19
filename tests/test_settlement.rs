@@ -1516,6 +1516,11 @@ async fn test_close_lender_position_success() {
         .unwrap();
     let lender_lamports_before = lender_account_before.lamports;
 
+    // Check if the withdrawal was distressed (haircut_owed > 0).
+    // Interest accrual can inflate entitlement above vault balance, leaving a
+    // haircut that blocks close_lender_position with error 34 (PositionNotEmpty).
+    let parsed = common::parse_lender_position(&pos_data);
+
     // Close lender position
     let close_ix = common::build_close_lender_position(&market, &lender.pubkey());
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
@@ -1525,6 +1530,19 @@ async fn test_close_lender_position_success() {
         &[&ctx.payer, &lender],
         recent,
     );
+
+    if parsed.haircut_owed > 0 {
+        // Distressed market -- close must fail with PositionNotEmpty (34).
+        let err = ctx.banks_client.process_transaction(tx).await.unwrap_err();
+        let code = common::extract_custom_error(&err)
+            .expect("expected Custom error from close_lender_position");
+        assert_eq!(
+            code, 34,
+            "Distressed close should fail with PositionNotEmpty (34), got {code}"
+        );
+        return;
+    }
+
     ctx.banks_client.process_transaction(tx).await.unwrap();
 
     // Verify: position account has 0 lamports (closed)
@@ -1724,6 +1742,11 @@ async fn test_close_lender_position_not_empty() {
     );
     ctx.banks_client.process_transaction(tx).await.unwrap();
 
+    // Check if the distressed withdrawal left a haircut_owed > 0, which
+    // blocks close_lender_position with error 34 (PositionNotEmpty).
+    let pos_data = common::get_account_data(&mut ctx, &position_pda).await;
+    let parsed = common::parse_lender_position(&pos_data);
+
     let close_after_withdraw_ix = common::build_close_lender_position(&market, &lender.pubkey());
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
@@ -1732,6 +1755,19 @@ async fn test_close_lender_position_not_empty() {
         &[&ctx.payer, &lender],
         recent,
     );
+
+    if parsed.haircut_owed > 0 {
+        // Distressed market -- close must fail with PositionNotEmpty (34).
+        let err = ctx.banks_client.process_transaction(tx).await.unwrap_err();
+        let code = common::extract_custom_error(&err)
+            .expect("expected Custom error from close_lender_position");
+        assert_eq!(
+            code, 34,
+            "Distressed close should fail with PositionNotEmpty (34), got {code}"
+        );
+        return;
+    }
+
     ctx.banks_client.process_transaction(tx).await.unwrap();
 
     let position_account_after = ctx.banks_client.get_account(position_pda).await.unwrap();
