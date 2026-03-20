@@ -3,8 +3,8 @@ use pinocchio::{AccountView, Address, ProgramResult};
 use solana_program_log::log;
 
 use crate::constants::{
-    DISC_HAIRCUT_STATE, DISC_LENDER_POSITION, DISC_MARKET, DISC_PROTOCOL_CONFIG, SEED_HAIRCUT_STATE,
-    SEED_LENDER, SEED_MARKET_AUTHORITY, SETTLEMENT_GRACE_PERIOD, WAD,
+    DISC_HAIRCUT_STATE, DISC_LENDER_POSITION, DISC_MARKET, DISC_PROTOCOL_CONFIG,
+    SEED_HAIRCUT_STATE, SEED_LENDER, SEED_MARKET_AUTHORITY, SETTLEMENT_GRACE_PERIOD, WAD,
 };
 use crate::error::LendingError;
 use crate::logic::interest::accrue_interest;
@@ -335,8 +335,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
             // recovered portion leaves `haircut_accumulator` immediately,
             // because those funds are no longer reserved for this position.
             let rebased_owed = if existing_owed > 0 && existing_sf != settlement_factor {
-                let remaining =
-                    crate::logic::haircuts::rebase_remaining_owed(existing_owed, existing_sf, settlement_factor)?;
+                let remaining = crate::logic::haircuts::rebase_remaining_owed(
+                    existing_owed,
+                    existing_sf,
+                    settlement_factor,
+                )?;
                 let recovered = existing_owed.saturating_sub(remaining);
                 if recovered > 0 {
                     let new_acc = market.haircut_accumulator().saturating_sub(recovered);

@@ -463,10 +463,7 @@ async fn test_re_settle_monotonically_increases() {
     let mut prev_sf = sf_1;
     let (vault, _) = get_vault_pda(&s.market);
     let (protocol_config, _) = get_protocol_config_pda();
-    for (i, repay_amount) in [15_000_000u64, 15_000_001, 15_000_002]
-        .iter()
-        .enumerate()
-    {
+    for (i, repay_amount) in [15_000_000u64, 15_000_001, 15_000_002].iter().enumerate() {
         let repay = build_repay(
             &s.market,
             &s.borrower.pubkey(),

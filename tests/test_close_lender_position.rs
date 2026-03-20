@@ -604,9 +604,11 @@ async fn test_close_position_double_close() {
     if pos.haircut_owed > 0 {
         // Distressed — close fails with PositionNotEmpty, verify and return
         let err = ctx.banks_client.process_transaction(tx).await.unwrap_err();
-        let code = common::extract_custom_error(&err)
-            .expect("expected Custom error");
-        assert_eq!(code, 34, "expected PositionNotEmpty (34) due to pending haircut");
+        let code = common::extract_custom_error(&err).expect("expected Custom error");
+        assert_eq!(
+            code, 34,
+            "expected PositionNotEmpty (34) due to pending haircut"
+        );
         return;
     }
 

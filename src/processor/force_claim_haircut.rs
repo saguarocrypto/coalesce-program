@@ -247,8 +247,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
 
     // Step 4: Add new contribution to HaircutState
     if new_owed > 0 {
-        let (new_w, new_o) =
-            crate::logic::haircuts::position_contribution(new_owed, current_sf)?;
+        let (new_w, new_o) = crate::logic::haircuts::position_contribution(new_owed, current_sf)?;
         let w_sum = haircut_state
             .claim_weight_sum()
             .checked_add(new_w)

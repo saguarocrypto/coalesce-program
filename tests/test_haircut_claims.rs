@@ -32,7 +32,7 @@
     clippy::needless_range_loop,
     clippy::if_same_then_else,
     clippy::if_not_else,
-    clippy::int_plus_one,
+    clippy::int_plus_one
 )]
 
 mod common;
@@ -58,18 +58,17 @@ const WAD: u128 = 1_000_000_000_000_000_000;
 //   - Clock advanced past maturity + grace period
 //   - Settlement NOT yet triggered (settlement_factor_wad == 0)
 // ===========================================================================
-async fn setup_distressed_market(
-) -> (
-    solana_sdk::pubkey::Pubkey,     // market
-    solana_sdk::pubkey::Pubkey,     // vault
-    Keypair,                        // borrower
-    Keypair,                        // lender_a
-    solana_sdk::pubkey::Pubkey,     // lender_a_token
-    Keypair,                        // lender_b
-    solana_sdk::pubkey::Pubkey,     // lender_b_token
-    solana_sdk::pubkey::Pubkey,     // mint
-    Keypair,                        // mint_authority
-    Keypair,                        // blacklist_program
+async fn setup_distressed_market() -> (
+    solana_sdk::pubkey::Pubkey, // market
+    solana_sdk::pubkey::Pubkey, // vault
+    Keypair,                    // borrower
+    Keypair,                    // lender_a
+    solana_sdk::pubkey::Pubkey, // lender_a_token
+    Keypair,                    // lender_b
+    solana_sdk::pubkey::Pubkey, // lender_b_token
+    solana_sdk::pubkey::Pubkey, // mint
+    Keypair,                    // mint_authority
+    Keypair,                    // blacklist_program
     solana_program_test::ProgramTestContext,
 ) {
     let mut ctx = common::start_context().await;
@@ -131,8 +130,14 @@ async fn setup_distressed_market(
 
     // Lender A deposits 500 USDC
     let la_token = common::create_token_account(&mut ctx, &mint, &lender_a.pubkey()).await;
-    common::mint_to_account(&mut ctx, &mint, &la_token.pubkey(), &mint_authority, 500 * USDC)
-        .await;
+    common::mint_to_account(
+        &mut ctx,
+        &mint,
+        &la_token.pubkey(),
+        &mint_authority,
+        500 * USDC,
+    )
+    .await;
     let dep_a = common::build_deposit(
         &market,
         &lender_a.pubkey(),
@@ -145,8 +150,14 @@ async fn setup_distressed_market(
 
     // Lender B deposits 500 USDC
     let lb_token = common::create_token_account(&mut ctx, &mint, &lender_b.pubkey()).await;
-    common::mint_to_account(&mut ctx, &mint, &lb_token.pubkey(), &mint_authority, 500 * USDC)
-        .await;
+    common::mint_to_account(
+        &mut ctx,
+        &mint,
+        &lb_token.pubkey(),
+        &mint_authority,
+        500 * USDC,
+    )
+    .await;
     let dep_b = common::build_deposit(
         &market,
         &lender_b.pubkey(),
@@ -192,8 +203,19 @@ async fn setup_distressed_market(
 
 #[tokio::test]
 async fn test_claim_haircut_full_recovery() {
-    let (market, vault, borrower, lender_a, la_token, _lender_b, _lb_token, mint, mint_auth, blp, mut ctx) =
-        setup_distressed_market().await;
+    let (
+        market,
+        vault,
+        borrower,
+        lender_a,
+        la_token,
+        _lender_b,
+        _lb_token,
+        mint,
+        mint_auth,
+        blp,
+        mut ctx,
+    ) = setup_distressed_market().await;
 
     let brw_token = common::create_token_account(&mut ctx, &mint, &borrower.pubkey()).await;
 
@@ -212,8 +234,14 @@ async fn test_claim_haircut_full_recovery() {
     let (la_pos_pda, _) = common::get_lender_position_pda(&market, &lender_a.pubkey());
     let pos_data = common::get_account_data(&mut ctx, &la_pos_pda).await;
     let pos = common::parse_lender_position(&pos_data);
-    assert!(pos.haircut_owed > 0, "haircut_owed should be nonzero after distressed withdrawal");
-    assert!(pos.withdrawal_sf > 0 && pos.withdrawal_sf < WAD, "withdrawal_sf should be distressed");
+    assert!(
+        pos.haircut_owed > 0,
+        "haircut_owed should be nonzero after distressed withdrawal"
+    );
+    assert!(
+        pos.withdrawal_sf > 0 && pos.withdrawal_sf < WAD,
+        "withdrawal_sf should be distressed"
+    );
 
     let la_balance_after_withdraw = common::get_token_balance(&mut ctx, &la_token).await;
 
@@ -235,7 +263,10 @@ async fn test_claim_haircut_full_recovery() {
 
     let md = common::get_account_data(&mut ctx, &market).await;
     let parsed = common::parse_market(&md);
-    assert!(parsed.settlement_factor_wad > pos.withdrawal_sf, "SF should have improved");
+    assert!(
+        parsed.settlement_factor_wad > pos.withdrawal_sf,
+        "SF should have improved"
+    );
 
     // Lender A claims haircut
     let claim = common::build_claim_haircut(&market, &lender_a.pubkey(), &la_token);
@@ -262,7 +293,10 @@ async fn test_claim_haircut_full_recovery() {
 
     // If SF reached WAD, full claim should have zeroed haircut_owed
     if parsed.settlement_factor_wad == WAD {
-        assert_eq!(pos2.haircut_owed, 0, "full recovery should zero haircut_owed");
+        assert_eq!(
+            pos2.haircut_owed, 0,
+            "full recovery should zero haircut_owed"
+        );
     }
 }
 
@@ -272,8 +306,19 @@ async fn test_claim_haircut_full_recovery() {
 
 #[tokio::test]
 async fn test_claim_haircut_no_improvement_reverts() {
-    let (market, _vault, _borrower, lender_a, la_token, _lender_b, _lb_token, _mint, _mint_auth, blp, mut ctx) =
-        setup_distressed_market().await;
+    let (
+        market,
+        _vault,
+        _borrower,
+        lender_a,
+        la_token,
+        _lender_b,
+        _lb_token,
+        _mint,
+        _mint_auth,
+        blp,
+        mut ctx,
+    ) = setup_distressed_market().await;
 
     // Lender A withdraws — triggers settlement
     let wdr = common::build_withdraw(
@@ -298,8 +343,19 @@ async fn test_claim_haircut_no_improvement_reverts() {
 
 #[tokio::test]
 async fn test_claim_haircut_no_owed_reverts() {
-    let (market, vault, borrower, lender_a, la_token, _lender_b, _lb_token, mint, mint_auth, blp, mut ctx) =
-        setup_distressed_market().await;
+    let (
+        market,
+        vault,
+        borrower,
+        lender_a,
+        la_token,
+        _lender_b,
+        _lb_token,
+        mint,
+        mint_auth,
+        blp,
+        mut ctx,
+    ) = setup_distressed_market().await;
 
     let brw_token = common::create_token_account(&mut ctx, &mint, &borrower.pubkey()).await;
 
@@ -348,42 +404,48 @@ async fn test_claim_haircut_no_owed_reverts() {
             break;
         }
         // Use ComputeBudget nonce to ensure unique tx signatures per iteration
-        let budget_ix = solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(
-            200_000 + nonce,
-        );
+        let budget_ix =
+            solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(
+                200_000 + nonce,
+            );
 
         // Try re_settle to push SF higher (may fail if already at max)
         let rs_loop = common::build_re_settle(&market, &vault);
-        let _ = ctx.banks_client.process_transaction(
-            solana_sdk::transaction::Transaction::new_signed_with_payer(
+        let _ = ctx
+            .banks_client
+            .process_transaction(solana_sdk::transaction::Transaction::new_signed_with_payer(
                 &[budget_ix.clone(), rs_loop],
                 Some(&ctx.payer.pubkey()),
                 &[&ctx.payer],
                 ctx.banks_client.get_latest_blockhash().await.unwrap(),
-            ),
-        ).await;
+            ))
+            .await;
 
-        let budget_ix2 = solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(
-            300_000 + nonce,
-        );
+        let budget_ix2 =
+            solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(
+                300_000 + nonce,
+            );
 
         // Try claim
         let claim_loop = common::build_claim_haircut(&market, &lender_a.pubkey(), &la_token);
-        let _ = ctx.banks_client.process_transaction(
-            solana_sdk::transaction::Transaction::new_signed_with_payer(
+        let _ = ctx
+            .banks_client
+            .process_transaction(solana_sdk::transaction::Transaction::new_signed_with_payer(
                 &[budget_ix2, claim_loop],
                 Some(&ctx.payer.pubkey()),
                 &[&ctx.payer, &lender_a],
                 ctx.banks_client.get_latest_blockhash().await.unwrap(),
-            ),
-        ).await;
+            ))
+            .await;
     }
 
     // After claiming everything, haircut_owed should be 0
-    let pos_final = common::parse_lender_position(
-        &common::get_account_data(&mut ctx, &la_pos_pda).await,
+    let pos_final =
+        common::parse_lender_position(&common::get_account_data(&mut ctx, &la_pos_pda).await);
+    assert_eq!(
+        pos_final.haircut_owed, 0,
+        "haircut_owed should reach 0 after full claim cycle"
     );
-    assert_eq!(pos_final.haircut_owed, 0, "haircut_owed should reach 0 after full claim cycle");
 
     // Now the second claim must fail with NoHaircutToClaim (43)
     let claim_final = common::build_claim_haircut(&market, &lender_a.pubkey(), &la_token);
@@ -396,8 +458,19 @@ async fn test_claim_haircut_no_owed_reverts() {
 
 #[tokio::test]
 async fn test_re_settle_idempotent_with_haircuts() {
-    let (market, vault, borrower, lender_a, la_token, _lender_b, _lb_token, mint, mint_auth, blp, mut ctx) =
-        setup_distressed_market().await;
+    let (
+        market,
+        vault,
+        borrower,
+        lender_a,
+        la_token,
+        _lender_b,
+        _lb_token,
+        mint,
+        mint_auth,
+        blp,
+        mut ctx,
+    ) = setup_distressed_market().await;
 
     let brw_token = common::create_token_account(&mut ctx, &mint, &borrower.pubkey()).await;
 
@@ -439,8 +512,19 @@ async fn test_re_settle_idempotent_with_haircuts() {
 
 #[tokio::test]
 async fn test_force_claim_haircut_by_borrower() {
-    let (market, vault, borrower, lender_a, la_token, _lender_b, _lb_token, mint, mint_auth, blp, mut ctx) =
-        setup_distressed_market().await;
+    let (
+        market,
+        vault,
+        borrower,
+        lender_a,
+        la_token,
+        _lender_b,
+        _lb_token,
+        mint,
+        mint_auth,
+        blp,
+        mut ctx,
+    ) = setup_distressed_market().await;
 
     let brw_token = common::create_token_account(&mut ctx, &mint, &borrower.pubkey()).await;
 
@@ -480,15 +564,13 @@ async fn test_force_claim_haircut_by_borrower() {
     let md_before = common::get_account_data(&mut ctx, &market).await;
     let acc_before = common::parse_market(&md_before).haircut_accumulator;
     let owed_before = pos_before.haircut_owed;
-    assert!(owed_before > 0, "setup: haircut_owed must be > 0 before force_claim");
+    assert!(
+        owed_before > 0,
+        "setup: haircut_owed must be > 0 before force_claim"
+    );
 
     // Borrower force-claims on behalf of lender A
-    let fc = common::build_force_claim_haircut(
-        &market,
-        &borrower.pubkey(),
-        &la_pos_pda,
-        &la_token,
-    );
+    let fc = common::build_force_claim_haircut(&market, &borrower.pubkey(), &la_pos_pda, &la_token);
     common::send_ok(&mut ctx, fc, &[&borrower]).await;
 
     // Read post-claim state
@@ -527,8 +609,19 @@ async fn test_force_claim_haircut_by_borrower() {
 
 #[tokio::test]
 async fn test_force_claim_haircut_non_borrower_rejected() {
-    let (market, vault, borrower, lender_a, la_token, _lender_b, _lb_token, mint, mint_auth, blp, mut ctx) =
-        setup_distressed_market().await;
+    let (
+        market,
+        vault,
+        borrower,
+        lender_a,
+        la_token,
+        _lender_b,
+        _lb_token,
+        mint,
+        mint_auth,
+        blp,
+        mut ctx,
+    ) = setup_distressed_market().await;
 
     let brw_token = common::create_token_account(&mut ctx, &mint, &borrower.pubkey()).await;
 
@@ -563,12 +656,7 @@ async fn test_force_claim_haircut_non_borrower_rejected() {
     // Random signer tries force_claim — should fail
     let random = Keypair::new();
     common::airdrop_multiple(&mut ctx, &[&random], 1_000_000_000).await;
-    let fc = common::build_force_claim_haircut(
-        &market,
-        &random.pubkey(),
-        &la_pos_pda,
-        &la_token,
-    );
+    let fc = common::build_force_claim_haircut(&market, &random.pubkey(), &la_pos_pda, &la_token);
     // Error: MissingRequiredSignature or Unauthorized
     // force_claim checks borrower.is_signer then market.borrower match
     // With random as signer, market.borrower won't match → Unauthorized (5)
@@ -581,8 +669,19 @@ async fn test_force_claim_haircut_non_borrower_rejected() {
 
 #[tokio::test]
 async fn test_close_position_blocked_with_haircut() {
-    let (market, _vault, _borrower, lender_a, la_token, _lender_b, _lb_token, _mint, _mint_auth, blp, mut ctx) =
-        setup_distressed_market().await;
+    let (
+        market,
+        _vault,
+        _borrower,
+        lender_a,
+        la_token,
+        _lender_b,
+        _lb_token,
+        _mint,
+        _mint_auth,
+        blp,
+        mut ctx,
+    ) = setup_distressed_market().await;
 
     // Lender A withdraws — triggers settlement, gets haircut
     let wdr = common::build_withdraw(
@@ -599,7 +698,10 @@ async fn test_close_position_blocked_with_haircut() {
     let (la_pos_pda, _) = common::get_lender_position_pda(&market, &lender_a.pubkey());
     let pos_data = common::get_account_data(&mut ctx, &la_pos_pda).await;
     let pos = common::parse_lender_position(&pos_data);
-    assert_eq!(pos.scaled_balance, 0, "scaled_balance should be 0 after full withdrawal");
+    assert_eq!(
+        pos.scaled_balance, 0,
+        "scaled_balance should be 0 after full withdrawal"
+    );
     assert!(pos.haircut_owed > 0, "haircut_owed should be > 0");
 
     // Try to close — should fail with PositionNotEmpty (34)
@@ -623,7 +725,13 @@ async fn test_collect_fees_respects_haircut_reserve() {
 
     common::airdrop_multiple(
         &mut ctx,
-        &[&admin, &borrower, &whitelist_manager, &fee_authority, &lender],
+        &[
+            &admin,
+            &borrower,
+            &whitelist_manager,
+            &fee_authority,
+            &lender,
+        ],
         10_000_000_000,
     )
     .await;
@@ -663,8 +771,14 @@ async fn test_collect_fees_respects_haircut_reserve() {
 
     // Lender deposits 1000 USDC
     let l_token = common::create_token_account(&mut ctx, &mint, &lender.pubkey()).await;
-    common::mint_to_account(&mut ctx, &mint, &l_token.pubkey(), &mint_authority, 1000 * USDC)
-        .await;
+    common::mint_to_account(
+        &mut ctx,
+        &mint,
+        &l_token.pubkey(),
+        &mint_authority,
+        1000 * USDC,
+    )
+    .await;
     let dep = common::build_deposit(
         &market,
         &lender.pubkey(),
@@ -709,8 +823,14 @@ async fn test_collect_fees_respects_haircut_reserve() {
     );
 
     // Borrower repays full 500 to bring SF to WAD for remaining lenders
-    common::mint_to_account(&mut ctx, &mint, &brw_token.pubkey(), &mint_authority, 500 * USDC)
-        .await;
+    common::mint_to_account(
+        &mut ctx,
+        &mint,
+        &brw_token.pubkey(),
+        &mint_authority,
+        500 * USDC,
+    )
+    .await;
     let rep = common::build_repay(
         &market,
         &borrower.pubkey(),
@@ -740,8 +860,7 @@ async fn test_collect_fees_respects_haircut_reserve() {
     // Attempt fee collection — it may succeed (capped) or fail (distress guard,
     // no fees, or no surplus). Either way, vault must not decrease by more than
     // the fees that were actually collected.
-    let fee_dest =
-        common::create_token_account(&mut ctx, &mint, &fee_authority.pubkey()).await;
+    let fee_dest = common::create_token_account(&mut ctx, &mint, &fee_authority.pubkey()).await;
     let cf = common::build_collect_fees(&market, &fee_authority.pubkey(), &fee_dest.pubkey());
     let bh = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
@@ -797,8 +916,19 @@ async fn test_collect_fees_respects_haircut_reserve() {
 
 #[tokio::test]
 async fn test_withdraw_stores_haircut_on_position() {
-    let (market, _vault, _borrower, lender_a, la_token, _lender_b, _lb_token, _mint, _mint_auth, blp, mut ctx) =
-        setup_distressed_market().await;
+    let (
+        market,
+        _vault,
+        _borrower,
+        lender_a,
+        la_token,
+        _lender_b,
+        _lb_token,
+        _mint,
+        _mint_auth,
+        blp,
+        mut ctx,
+    ) = setup_distressed_market().await;
 
     // Lender A withdraws — triggers settlement
     let wdr = common::build_withdraw(
@@ -820,7 +950,10 @@ async fn test_withdraw_stores_haircut_on_position() {
     let md = common::get_account_data(&mut ctx, &market).await;
     let parsed = common::parse_market(&md);
 
-    assert!(pos.haircut_owed > 0, "haircut_owed must be > 0 after distressed withdrawal");
+    assert!(
+        pos.haircut_owed > 0,
+        "haircut_owed must be > 0 after distressed withdrawal"
+    );
     assert_eq!(
         pos.withdrawal_sf, parsed.settlement_factor_wad,
         "withdrawal_sf must match market settlement factor"
@@ -840,8 +973,19 @@ async fn test_withdraw_stores_haircut_on_position() {
 
 #[tokio::test]
 async fn test_force_close_preserves_haircut() {
-    let (market, _vault, borrower, lender_a, la_token, _lender_b, _lb_token, _mint, _mint_auth, blp, mut ctx) =
-        setup_distressed_market().await;
+    let (
+        market,
+        _vault,
+        borrower,
+        lender_a,
+        la_token,
+        _lender_b,
+        _lb_token,
+        _mint,
+        _mint_auth,
+        blp,
+        mut ctx,
+    ) = setup_distressed_market().await;
 
     // Lender A withdraws — triggers settlement
     let wdr = common::build_withdraw(
@@ -879,7 +1023,10 @@ async fn test_force_close_preserves_haircut() {
             pos.haircut_owed > 0,
             "force-closed position should retain haircut_owed when SF < WAD"
         );
-        assert_eq!(pos.scaled_balance, 0, "scaled_balance should be 0 after force_close");
+        assert_eq!(
+            pos.scaled_balance, 0,
+            "scaled_balance should be 0 after force_close"
+        );
     }
 }
 
@@ -928,17 +1075,39 @@ async fn test_force_close_preserves_haircut() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn test_scenario_no_repayment() {
-    let (market, _vault, _borrower, lender_a, la_token, lender_b, lb_token, _mint, _mint_auth, blp, mut ctx) =
-        setup_distressed_market().await;
+    let (
+        market,
+        _vault,
+        _borrower,
+        lender_a,
+        la_token,
+        lender_b,
+        lb_token,
+        _mint,
+        _mint_auth,
+        blp,
+        mut ctx,
+    ) = setup_distressed_market().await;
 
     // Lender A withdraws (triggers settlement at SF = 500 / 1000 = 0.5).
-    let wdr_a = common::build_withdraw(&market, &lender_a.pubkey(), &la_token, &blp.pubkey(), 0u128, 0);
+    let wdr_a = common::build_withdraw(
+        &market,
+        &lender_a.pubkey(),
+        &la_token,
+        &blp.pubkey(),
+        0u128,
+        0,
+    );
     common::send_ok(&mut ctx, wdr_a, &[&lender_a]).await;
 
     // Verify SF = 0.5
     let md = common::get_account_data(&mut ctx, &market).await;
     let parsed = common::parse_market(&md);
-    assert_eq!(parsed.settlement_factor_wad, WAD / 2, "SF should be exactly 0.5");
+    assert_eq!(
+        parsed.settlement_factor_wad,
+        WAD / 2,
+        "SF should be exactly 0.5"
+    );
 
     // Lender A got 250 (500 x 0.5).
     let la_bal = common::get_token_balance(&mut ctx, &la_token).await;
@@ -947,11 +1116,22 @@ async fn test_scenario_no_repayment() {
     // Lender A's missing 250 is preserved on-position for later recovery.
     let (la_pos, _) = common::get_lender_position_pda(&market, &lender_a.pubkey());
     let pos_a = common::parse_lender_position(&common::get_account_data(&mut ctx, &la_pos).await);
-    assert_eq!(pos_a.haircut_owed, 250 * USDC, "Lender A haircut_owed should be 250K");
+    assert_eq!(
+        pos_a.haircut_owed,
+        250 * USDC,
+        "Lender A haircut_owed should be 250K"
+    );
     assert_eq!(pos_a.withdrawal_sf, WAD / 2, "withdrawal_sf should be 0.5");
 
     // Lender B withdraws at the same SF and gets the same treatment.
-    let wdr_b = common::build_withdraw(&market, &lender_b.pubkey(), &lb_token, &blp.pubkey(), 0u128, 0);
+    let wdr_b = common::build_withdraw(
+        &market,
+        &lender_b.pubkey(),
+        &lb_token,
+        &blp.pubkey(),
+        0u128,
+        0,
+    );
     common::send_ok(&mut ctx, wdr_b, &[&lender_b]).await;
 
     let lb_bal = common::get_token_balance(&mut ctx, &lb_token).await;
@@ -969,14 +1149,26 @@ async fn test_scenario_no_repayment() {
     // So the aggregate is (1000, 500).
     let (hs_pda, _) = common::get_haircut_state_pda(&market);
     let hs = common::parse_haircut_state(&common::get_account_data(&mut ctx, &hs_pda).await);
-    assert_eq!(hs.claim_weight_sum, 1_000 * (USDC as u128), "weight_sum should be 1000 USDC");
-    assert_eq!(hs.claim_offset_sum, 500 * (USDC as u128), "offset_sum should be 500 USDC");
+    assert_eq!(
+        hs.claim_weight_sum,
+        1_000 * (USDC as u128),
+        "weight_sum should be 1000 USDC"
+    );
+    assert_eq!(
+        hs.claim_offset_sum,
+        500 * (USDC as u128),
+        "offset_sum should be 500 USDC"
+    );
 
     // The exact reserve is also 500 (= 250 + 250). This is what sweep paths
     // must continue to protect.
     let md2 = common::get_account_data(&mut ctx, &market).await;
     let parsed2 = common::parse_market(&md2);
-    assert_eq!(parsed2.haircut_accumulator, 500 * USDC, "accumulator should be 500K");
+    assert_eq!(
+        parsed2.haircut_accumulator,
+        500 * USDC,
+        "accumulator should be 500K"
+    );
 
     // No repayment means no new value. The conservative solver therefore sees no
     // improvement and `re_settle` must fail.
@@ -1000,18 +1192,40 @@ async fn test_scenario_no_repayment() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn test_scenario_partial_repayment_equal_treatment() {
-    let (market, vault, borrower, lender_a, la_token, lender_b, lb_token, mint, mint_auth, blp, mut ctx) =
-        setup_distressed_market().await;
+    let (
+        market,
+        vault,
+        borrower,
+        lender_a,
+        la_token,
+        lender_b,
+        lb_token,
+        mint,
+        mint_auth,
+        blp,
+        mut ctx,
+    ) = setup_distressed_market().await;
 
     let brw_token = common::create_token_account(&mut ctx, &mint, &borrower.pubkey()).await;
 
     // Lender A withdraws at SF = 0.5, gets 250 immediately and leaves a 250
     // haircut claim behind.
-    let wdr_a = common::build_withdraw(&market, &lender_a.pubkey(), &la_token, &blp.pubkey(), 0u128, 0);
+    let wdr_a = common::build_withdraw(
+        &market,
+        &lender_a.pubkey(),
+        &la_token,
+        &blp.pubkey(),
+        0u128,
+        0,
+    );
     common::send_ok(&mut ctx, wdr_a, &[&lender_a]).await;
 
     let la_after_withdraw = common::get_token_balance(&mut ctx, &la_token).await;
-    assert_eq!(la_after_withdraw, 250 * USDC, "Lender A initial payout should be 250K");
+    assert_eq!(
+        la_after_withdraw,
+        250 * USDC,
+        "Lender A initial payout should be 250K"
+    );
 
     // Verify haircut state
     let (la_pos, _) = common::get_lender_position_pda(&market, &lender_a.pubkey());
@@ -1022,7 +1236,14 @@ async fn test_scenario_partial_repayment_equal_treatment() {
     // Borrower repays 250. Those new tokens stay visible to `re_settle`; they
     // are not hidden behind the haircut reserve.
     common::mint_to_account(&mut ctx, &mint, &brw_token.pubkey(), &mint_auth, 250 * USDC).await;
-    let rep = common::build_repay(&market, &borrower.pubkey(), &brw_token.pubkey(), &mint, &borrower.pubkey(), 250 * USDC);
+    let rep = common::build_repay(
+        &market,
+        &borrower.pubkey(),
+        &brw_token.pubkey(),
+        &mint,
+        &borrower.pubkey(),
+        250 * USDC,
+    );
     common::send_ok(&mut ctx, rep, &[&borrower]).await;
 
     // Re-settle: SF improves to 0.75.
@@ -1037,14 +1258,29 @@ async fn test_scenario_partial_repayment_equal_treatment() {
 
     let md = common::get_account_data(&mut ctx, &market).await;
     let parsed = common::parse_market(&md);
-    assert_eq!(parsed.settlement_factor_wad, WAD * 3 / 4, "SF should be exactly 0.75");
+    assert_eq!(
+        parsed.settlement_factor_wad,
+        WAD * 3 / 4,
+        "SF should be exactly 0.75"
+    );
 
     // Lender B stayed in the market, so withdrawing now pays 500 x 0.75 = 375.
-    let wdr_b = common::build_withdraw(&market, &lender_b.pubkey(), &lb_token, &blp.pubkey(), 0u128, 0);
+    let wdr_b = common::build_withdraw(
+        &market,
+        &lender_b.pubkey(),
+        &lb_token,
+        &blp.pubkey(),
+        0u128,
+        0,
+    );
     common::send_ok(&mut ctx, wdr_b, &[&lender_b]).await;
 
     let lb_bal = common::get_token_balance(&mut ctx, &lb_token).await;
-    assert_eq!(lb_bal, 375 * USDC, "Lender B should receive 375K at SF 0.75");
+    assert_eq!(
+        lb_bal,
+        375 * USDC,
+        "Lender B should receive 375K at SF 0.75"
+    );
 
     // Lender A claims the exact proportional improvement:
     //   250 * (0.75 - 0.5) / (1.0 - 0.5) = 125.
@@ -1052,11 +1288,18 @@ async fn test_scenario_partial_repayment_equal_treatment() {
     common::send_ok(&mut ctx, claim_a, &[&lender_a]).await;
 
     let la_final = common::get_token_balance(&mut ctx, &la_token).await;
-    assert_eq!(la_final, 375 * USDC, "Lender A total (250K + 125K claim) should be 375K");
+    assert_eq!(
+        la_final,
+        375 * USDC,
+        "Lender A total (250K + 125K claim) should be 375K"
+    );
 
     // Equal treatment: the early withdrawer plus later claim equals the amount
     // the patient lender receives by waiting.
-    assert_eq!(la_final, lb_bal, "Both lenders should receive equal total payouts");
+    assert_eq!(
+        la_final, lb_bal,
+        "Both lenders should receive equal total payouts"
+    );
 
     // Vault should be empty: the remaining 500 in the vault was split between
     // lender B's 375 withdrawal and lender A's 125 claim.
@@ -1077,19 +1320,47 @@ async fn test_scenario_partial_repayment_equal_treatment() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn test_scenario_partial_then_full_repayment() {
-    let (market, vault, borrower, lender_a, la_token, lender_b, lb_token, mint, mint_auth, blp, mut ctx) =
-        setup_distressed_market().await;
+    let (
+        market,
+        vault,
+        borrower,
+        lender_a,
+        la_token,
+        lender_b,
+        lb_token,
+        mint,
+        mint_auth,
+        blp,
+        mut ctx,
+    ) = setup_distressed_market().await;
 
     let brw_token = common::create_token_account(&mut ctx, &mint, &borrower.pubkey()).await;
 
     // Lender A exits at SF = 0.5, receiving 250 and leaving 250 still owed.
-    let wdr_a = common::build_withdraw(&market, &lender_a.pubkey(), &la_token, &blp.pubkey(), 0u128, 0);
+    let wdr_a = common::build_withdraw(
+        &market,
+        &lender_a.pubkey(),
+        &la_token,
+        &blp.pubkey(),
+        0u128,
+        0,
+    );
     common::send_ok(&mut ctx, wdr_a, &[&lender_a]).await;
-    assert_eq!(common::get_token_balance(&mut ctx, &la_token).await, 250 * USDC);
+    assert_eq!(
+        common::get_token_balance(&mut ctx, &la_token).await,
+        250 * USDC
+    );
 
     // --- Phase 1: Borrower repays 249 ---
     common::mint_to_account(&mut ctx, &mint, &brw_token.pubkey(), &mint_auth, 249 * USDC).await;
-    let rep1 = common::build_repay(&market, &borrower.pubkey(), &brw_token.pubkey(), &mint, &borrower.pubkey(), 249 * USDC);
+    let rep1 = common::build_repay(
+        &market,
+        &borrower.pubkey(),
+        &brw_token.pubkey(),
+        &mint,
+        &borrower.pubkey(),
+        249 * USDC,
+    );
     common::send_ok(&mut ctx, rep1, &[&borrower]).await;
 
     let rs1 = common::build_re_settle(&market, &vault);
@@ -1102,46 +1373,68 @@ async fn test_scenario_partial_then_full_repayment() {
     common::send_ok(&mut ctx, claim1, &[&lender_a]).await;
 
     let la_after_phase1 = common::get_token_balance(&mut ctx, &la_token).await;
-    assert!(la_after_phase1 > 250 * USDC, "After phase 1: A should have more than initial 250K");
+    assert!(
+        la_after_phase1 > 250 * USDC,
+        "After phase 1: A should have more than initial 250K"
+    );
 
     // Remaining haircut_owed should have decreased
     let (la_pos, _) = common::get_lender_position_pda(&market, &lender_a.pubkey());
     let pos_a = common::parse_lender_position(&common::get_account_data(&mut ctx, &la_pos).await);
-    assert!(pos_a.haircut_owed < 250 * USDC, "Remaining haircut should be less than 250K");
-    assert!(pos_a.withdrawal_sf > WAD / 2, "withdrawal_sf should be rebased above 0.5");
+    assert!(
+        pos_a.haircut_owed < 250 * USDC,
+        "Remaining haircut should be less than 250K"
+    );
+    assert!(
+        pos_a.withdrawal_sf > WAD / 2,
+        "withdrawal_sf should be rebased above 0.5"
+    );
 
     // --- Phase 2: Borrower repays the remaining 251 ---
     // Use a different amount from phase 1 so the transaction signature is
     // unique even though the account list is the same.
     common::mint_to_account(&mut ctx, &mint, &brw_token.pubkey(), &mint_auth, 251 * USDC).await;
-    let rep2 = common::build_repay(&market, &borrower.pubkey(), &brw_token.pubkey(), &mint, &borrower.pubkey(), 251 * USDC);
+    let rep2 = common::build_repay(
+        &market,
+        &borrower.pubkey(),
+        &brw_token.pubkey(),
+        &mint,
+        &borrower.pubkey(),
+        251 * USDC,
+    );
     common::send_ok(&mut ctx, rep2, &[&borrower]).await;
 
     // Re-settle + claim cycle until fully recovered.
     // Once SF reaches WAD, the remaining haircut becomes fully claimable and the
     // later `claim_haircut` call clears it completely.
     for nonce in 0u32..5 {
-        let budget = solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(200_000 + nonce);
+        let budget = solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(
+            200_000 + nonce,
+        );
         let rs = common::build_re_settle(&market, &vault);
-        let _ = ctx.banks_client.process_transaction(
-            Transaction::new_signed_with_payer(
+        let _ = ctx
+            .banks_client
+            .process_transaction(Transaction::new_signed_with_payer(
                 &[budget.clone(), rs],
                 Some(&ctx.payer.pubkey()),
                 &[&ctx.payer],
                 ctx.banks_client.get_latest_blockhash().await.unwrap(),
-            ),
-        ).await;
+            ))
+            .await;
 
-        let budget2 = solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(300_000 + nonce);
+        let budget2 = solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(
+            300_000 + nonce,
+        );
         let claim = common::build_claim_haircut(&market, &lender_a.pubkey(), &la_token);
-        let _ = ctx.banks_client.process_transaction(
-            Transaction::new_signed_with_payer(
+        let _ = ctx
+            .banks_client
+            .process_transaction(Transaction::new_signed_with_payer(
                 &[budget2, claim],
                 Some(&ctx.payer.pubkey()),
                 &[&ctx.payer, &lender_a],
                 ctx.banks_client.get_latest_blockhash().await.unwrap(),
-            ),
-        ).await;
+            ))
+            .await;
     }
 
     // Lender A should recover effectively the full 500, allowing for at most
@@ -1155,7 +1448,14 @@ async fn test_scenario_partial_then_full_repayment() {
 
     // Lender B waited until the market was fully repaired, so its withdrawal
     // should also land at essentially full value.
-    let wdr_b = common::build_withdraw(&market, &lender_b.pubkey(), &lb_token, &blp.pubkey(), 0u128, 0);
+    let wdr_b = common::build_withdraw(
+        &market,
+        &lender_b.pubkey(),
+        &lb_token,
+        &blp.pubkey(),
+        0u128,
+        0,
+    );
     common::send_ok(&mut ctx, wdr_b, &[&lender_b]).await;
 
     let lb_final = common::get_token_balance(&mut ctx, &lb_token).await;
@@ -1167,7 +1467,11 @@ async fn test_scenario_partial_then_full_repayment() {
 
     // Both lenders should end up approximately equal despite one exiting early
     // and recovering in multiple phases.
-    let diff = if la_final > lb_final { la_final - lb_final } else { lb_final - la_final };
+    let diff = if la_final > lb_final {
+        la_final - lb_final
+    } else {
+        lb_final - la_final
+    };
     assert!(
         diff <= 1 * USDC,
         "Lenders should receive approximately equal amounts: A={la_final} B={lb_final} diff={diff}"
@@ -1184,30 +1488,62 @@ async fn test_scenario_partial_then_full_repayment() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn test_scenario_full_repayment_no_haircuts() {
-    let (market, vault, borrower, lender_a, la_token, lender_b, lb_token, mint, mint_auth, blp, mut ctx) =
-        setup_distressed_market().await;
+    let (
+        market,
+        vault,
+        borrower,
+        lender_a,
+        la_token,
+        lender_b,
+        lb_token,
+        mint,
+        mint_auth,
+        blp,
+        mut ctx,
+    ) = setup_distressed_market().await;
 
     let brw_token = common::create_token_account(&mut ctx, &mint, &borrower.pubkey()).await;
 
     // Borrower repays the full 500 before anyone withdraws.
     common::mint_to_account(&mut ctx, &mint, &brw_token.pubkey(), &mint_auth, 500 * USDC).await;
-    let rep = common::build_repay(&market, &borrower.pubkey(), &brw_token.pubkey(), &mint, &borrower.pubkey(), 500 * USDC);
+    let rep = common::build_repay(
+        &market,
+        &borrower.pubkey(),
+        &brw_token.pubkey(),
+        &mint,
+        &borrower.pubkey(),
+        500 * USDC,
+    );
     common::send_ok(&mut ctx, rep, &[&borrower]).await;
 
     // Vault now holds the full 1000 again (500 still in-vault deposits + 500
     // repaid by the borrower).
     let vault_bal = common::get_token_balance(&mut ctx, &vault).await;
-    assert_eq!(vault_bal, 1_000 * USDC, "Vault should have 1M after full repayment");
+    assert_eq!(
+        vault_bal,
+        1_000 * USDC,
+        "Vault should have 1M after full repayment"
+    );
 
     // Lender A's withdrawal is the first post-maturity settlement action, so it
     // locks SF at 1000 / 1000 = WAD.
-    let wdr_a = common::build_withdraw(&market, &lender_a.pubkey(), &la_token, &blp.pubkey(), 0u128, 0);
+    let wdr_a = common::build_withdraw(
+        &market,
+        &lender_a.pubkey(),
+        &la_token,
+        &blp.pubkey(),
+        0u128,
+        0,
+    );
     common::send_ok(&mut ctx, wdr_a, &[&lender_a]).await;
 
     // SF should be WAD
     let md = common::get_account_data(&mut ctx, &market).await;
     let parsed = common::parse_market(&md);
-    assert_eq!(parsed.settlement_factor_wad, WAD, "SF should be WAD (1.0) after full repayment");
+    assert_eq!(
+        parsed.settlement_factor_wad, WAD,
+        "SF should be WAD (1.0) after full repayment"
+    );
 
     // Full payout means no haircut bookkeeping is created.
     let la_bal = common::get_token_balance(&mut ctx, &la_token).await;
@@ -1217,10 +1553,20 @@ async fn test_scenario_full_repayment_no_haircuts() {
     let (la_pos, _) = common::get_lender_position_pda(&market, &lender_a.pubkey());
     let pos_a = common::parse_lender_position(&common::get_account_data(&mut ctx, &la_pos).await);
     assert_eq!(pos_a.haircut_owed, 0, "No haircut when SF = WAD");
-    assert_eq!(pos_a.withdrawal_sf, 0, "withdrawal_sf should be 0 (no haircut)");
+    assert_eq!(
+        pos_a.withdrawal_sf, 0,
+        "withdrawal_sf should be 0 (no haircut)"
+    );
 
     // Lender B also withdraws at full value.
-    let wdr_b = common::build_withdraw(&market, &lender_b.pubkey(), &lb_token, &blp.pubkey(), 0u128, 0);
+    let wdr_b = common::build_withdraw(
+        &market,
+        &lender_b.pubkey(),
+        &lb_token,
+        &blp.pubkey(),
+        0u128,
+        0,
+    );
     common::send_ok(&mut ctx, wdr_b, &[&lender_b]).await;
 
     let lb_bal = common::get_token_balance(&mut ctx, &lb_token).await;
@@ -1238,5 +1584,8 @@ async fn test_scenario_full_repayment_no_haircuts() {
 
     // Vault should be empty
     let vault_final = common::get_token_balance(&mut ctx, &vault).await;
-    assert_eq!(vault_final, 0, "Vault should be empty after both full withdrawals");
+    assert_eq!(
+        vault_final, 0,
+        "Vault should be empty after both full withdrawals"
+    );
 }

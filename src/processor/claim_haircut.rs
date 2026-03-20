@@ -149,7 +149,8 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
         return Err(LendingError::SettlementNotImproved.into());
     }
 
-    let mut claimable = crate::logic::haircuts::claimable_exact(haircut_owed, withdrawal_sf, current_sf)?;
+    let mut claimable =
+        crate::logic::haircuts::claimable_exact(haircut_owed, withdrawal_sf, current_sf)?;
 
     // --- Defense-in-depth: cap at vault surplus ---
     //
@@ -248,8 +249,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
     // Step 4: Reinsert any remaining haircut into the conservative settlement
     // aggregate at its new anchor.
     if new_owed > 0 {
-        let (new_w, new_o) =
-            crate::logic::haircuts::position_contribution(new_owed, current_sf)?;
+        let (new_w, new_o) = crate::logic::haircuts::position_contribution(new_owed, current_sf)?;
         let w_sum = haircut_state
             .claim_weight_sum()
             .checked_add(new_w)

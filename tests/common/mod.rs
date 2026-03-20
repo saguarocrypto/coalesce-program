@@ -900,7 +900,7 @@ pub async fn setup_protocol(
 /// Returns the market Pubkey.
 pub async fn setup_market_full(
     ctx: &mut ProgramTestContext,
-    admin: &Keypair,
+    _admin: &Keypair,
     borrower: &Keypair,
     mint: &Pubkey,
     blacklist_program: &Pubkey,

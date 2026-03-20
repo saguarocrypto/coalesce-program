@@ -2389,8 +2389,7 @@ async fn test_err_027_position_not_empty() {
 
     if parsed_pos.haircut_owed > 0 {
         // Distressed market — close should still fail with PositionNotEmpty
-        let close_still_blocked_ix =
-            common::build_close_lender_position(&market, &lender.pubkey());
+        let close_still_blocked_ix = common::build_close_lender_position(&market, &lender.pubkey());
         let close_still_blocked_tx = Transaction::new_signed_with_payer(
             &[close_still_blocked_ix],
             Some(&ctx.payer.pubkey()),

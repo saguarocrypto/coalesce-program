@@ -42,16 +42,16 @@ use pinocchio::error::ProgramError;
 /// gap from the fresh withdrawal is added on top.
 ///
 /// Rounds **down** (conservative for the claimant — the protocol keeps the dust).
-pub fn rebase_remaining_owed(old_owed: u64, old_sf: u128, new_sf: u128) -> Result<u64, ProgramError> {
+pub fn rebase_remaining_owed(
+    old_owed: u64,
+    old_sf: u128,
+    new_sf: u128,
+) -> Result<u64, ProgramError> {
     if old_owed == 0 || old_sf == new_sf {
         return Ok(old_owed);
     }
-    let wad_minus_new = WAD
-        .checked_sub(new_sf)
-        .ok_or(LendingError::MathOverflow)?;
-    let wad_minus_old = WAD
-        .checked_sub(old_sf)
-        .ok_or(LendingError::MathOverflow)?;
+    let wad_minus_new = WAD.checked_sub(new_sf).ok_or(LendingError::MathOverflow)?;
+    let wad_minus_old = WAD.checked_sub(old_sf).ok_or(LendingError::MathOverflow)?;
     if wad_minus_old == 0 {
         // old_sf == WAD means no distress at that anchor — owed should be 0.
         return Ok(0);
@@ -203,7 +203,10 @@ mod tests {
 
     #[test]
     fn rebase_no_change_when_same_sf() {
-        assert_eq!(rebase_remaining_owed(250_000, HALF_WAD, HALF_WAD).unwrap(), 250_000);
+        assert_eq!(
+            rebase_remaining_owed(250_000, HALF_WAD, HALF_WAD).unwrap(),
+            250_000
+        );
     }
 
     #[test]
@@ -240,7 +243,10 @@ mod tests {
     #[test]
     fn claimable_partial_recovery() {
         // anchor=0.5, current=0.75 → 250k * 0.25 / 0.5 = 125k
-        assert_eq!(claimable_exact(250_000, HALF_WAD, WAD * 3 / 4).unwrap(), 125_000);
+        assert_eq!(
+            claimable_exact(250_000, HALF_WAD, WAD * 3 / 4).unwrap(),
+            125_000
+        );
     }
 
     #[test]
