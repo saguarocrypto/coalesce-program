@@ -231,7 +231,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
         .checked_div(WAD)
         .ok_or(LendingError::MathOverflow)?;
 
-    let payout = u64::try_from(payout_u128).map_err(|_| LendingError::MathOverflow)?;
+    let mut payout = u64::try_from(payout_u128).map_err(|_| LendingError::MathOverflow)?;
 
     // Validate market authority PDA for CPI signing
     validate_market_authority(market_authority, market_account, market, program_id)?;
@@ -287,6 +287,9 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
                 if recovered > 0 {
                     let new_acc = market.haircut_accumulator().saturating_sub(recovered);
                     market.set_haircut_accumulator(new_acc);
+                    payout = payout
+                        .checked_add(recovered)
+                        .ok_or(LendingError::MathOverflow)?;
                 }
                 remaining
             } else {

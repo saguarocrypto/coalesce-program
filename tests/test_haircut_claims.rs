@@ -1589,3 +1589,312 @@ async fn test_scenario_full_repayment_no_haircuts() {
         "Vault should be empty after both full withdrawals"
     );
 }
+
+// ===========================================================================
+// Scenario:
+//   1. Lender A partially withdraws at SF = 0.5 → records haircut_owed
+//   2. Borrower repays, re_settle improves SF to ~0.75
+//   3. Lender A withdraws remaining balance → rebase recovers part of
+//      the old haircut and pays it out immediately
+//
+// Assertions:
+//   - Lender A's second withdrawal transfer includes the recovered amount
+//   - haircut_accumulator net-change = new_gap - recovered
+//   - After both lenders exit + full repay, borrower cannot sweep the
+//     recovered tokens via withdraw_excess (they were already paid)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_withdraw_recovered_haircut_paid_to_lender() {
+    let (
+        market,
+        vault,
+        borrower,
+        lender_a,
+        la_token,
+        lender_b,
+        lb_token,
+        mint,
+        mint_auth,
+        blp,
+        mut ctx,
+    ) = setup_distressed_market().await;
+
+    let brw_token = common::create_token_account(&mut ctx, &mint, &borrower.pubkey()).await;
+
+    // --- Step 1: Lender A partially withdraws (half balance) at distress ---
+    // With 0% APR, scale_factor == WAD, so scaled_balance for 500 USDC deposit
+    // = 500_000_000. Half = 250_000_000.
+    let half_scaled: u128 = 250_000_000;
+
+    let wdr1 = common::build_withdraw(
+        &market,
+        &lender_a.pubkey(),
+        &la_token,
+        &blp.pubkey(),
+        half_scaled,
+        0,
+    );
+    common::send_ok(&mut ctx, wdr1, &[&lender_a]).await;
+
+    // Record state after first withdrawal
+    let la_balance_after_w1 = common::get_token_balance(&mut ctx, &la_token).await;
+    let md1 = common::get_account_data(&mut ctx, &market).await;
+    let parsed1 = common::parse_market(&md1);
+    let sf_after_w1 = parsed1.settlement_factor_wad;
+    let acc_after_w1 = parsed1.haircut_accumulator;
+
+    assert!(sf_after_w1 > 0 && sf_after_w1 < WAD, "should be distressed");
+    assert!(acc_after_w1 > 0, "accumulator should record the gap");
+
+    let (la_pos_pda, _) = common::get_lender_position_pda(&market, &lender_a.pubkey());
+    let pos1 =
+        common::parse_lender_position(&common::get_account_data(&mut ctx, &la_pos_pda).await);
+    let owed_after_w1 = pos1.haircut_owed;
+    assert!(owed_after_w1 > 0, "haircut_owed should be nonzero");
+
+    // --- Step 2: Borrower repays 250 USDC to improve SF ---
+    common::mint_to_account(&mut ctx, &mint, &brw_token.pubkey(), &mint_auth, 250 * USDC).await;
+    let rep = common::build_repay(
+        &market,
+        &borrower.pubkey(),
+        &brw_token.pubkey(),
+        &mint,
+        &borrower.pubkey(),
+        250 * USDC,
+    );
+    common::send_ok(&mut ctx, rep, &[&borrower]).await;
+
+    // Re-settle to improve SF
+    let rs = common::build_re_settle(&market, &vault);
+    common::send_ok(&mut ctx, rs, &[]).await;
+
+    let md2 = common::get_account_data(&mut ctx, &market).await;
+    let parsed2 = common::parse_market(&md2);
+    let sf_after_resettle = parsed2.settlement_factor_wad;
+    assert!(
+        sf_after_resettle > sf_after_w1,
+        "SF should have improved after repayment: before={sf_after_w1} after={sf_after_resettle}"
+    );
+
+    // --- Step 3: Lender A withdraws remaining balance (triggers rebase) ---
+    // Pass 0 to withdraw all remaining
+    let wdr2 = common::build_withdraw(
+        &market,
+        &lender_a.pubkey(),
+        &la_token,
+        &blp.pubkey(),
+        0u128,
+        0,
+    );
+    common::send_ok(&mut ctx, wdr2, &[&lender_a]).await;
+
+    let la_balance_after_w2 = common::get_token_balance(&mut ctx, &la_token).await;
+    let tokens_received_w2 = la_balance_after_w2 - la_balance_after_w1;
+
+    // The second withdrawal should pay more than just the base payout
+    // (base_payout = remaining_scaled * scale_factor / WAD * sf / WAD).
+    // With the fix, it also includes the recovered haircut from the rebase.
+    //
+    // Without the fix, recovered would NOT be in the transfer — the lender
+    // would only get base_payout and the recovered tokens would sit in the
+    // vault as sweepable surplus.
+    //
+    // Compute expected base payout: 250 USDC * sf_after_resettle / WAD
+    let base_payout_w2 = (250u128 * USDC as u128 * sf_after_resettle / WAD) as u64;
+
+    assert!(
+        tokens_received_w2 > base_payout_w2,
+        "second withdrawal should include recovered haircut: received={tokens_received_w2} base_only={base_payout_w2}"
+    );
+
+    // --- Step 4: Verify exact accumulator delta ---
+    //
+    // Before second withdrawal: acc_after_w1 = owed_after_w1 = 125_000_000
+    // Rebase: remaining = 125M * (WAD - 0.75*WAD) / (WAD - 0.5*WAD) = 62_500_000
+    // recovered = 125M - 62.5M = 62_500_000
+    // new_gap = entitled - base_payout = 250M - 187.5M = 62_500_000
+    // Expected accumulator after: acc_after_w1 - recovered + new_gap = 125M - 62.5M + 62.5M = 125M
+    let md3 = common::get_account_data(&mut ctx, &market).await;
+    let parsed3 = common::parse_market(&md3);
+    let pos2 =
+        common::parse_lender_position(&common::get_account_data(&mut ctx, &la_pos_pda).await);
+
+    let new_gap_w2 = 250 * USDC - base_payout_w2;
+    let recovered_w2 = tokens_received_w2 - base_payout_w2;
+    let expected_acc = acc_after_w1 - recovered_w2 + new_gap_w2;
+    assert_eq!(
+        parsed3.haircut_accumulator, expected_acc,
+        "accumulator should be old - recovered + new_gap: got={} expected={expected_acc}",
+        parsed3.haircut_accumulator
+    );
+    assert_eq!(
+        parsed3.haircut_accumulator, pos2.haircut_owed,
+        "accumulator should equal position's owed (only one position has haircut)"
+    );
+
+    // --- Step 5: Lender B withdraws everything ---
+    let wdr_b = common::build_withdraw(
+        &market,
+        &lender_b.pubkey(),
+        &lb_token,
+        &blp.pubkey(),
+        0u128,
+        0,
+    );
+    common::send_ok(&mut ctx, wdr_b, &[&lender_b]).await;
+
+    // --- Step 6: Verify exact lender payouts and that the vault has no
+    //     unreserved surplus the borrower could sweep ---
+    let la_final = common::get_token_balance(&mut ctx, &la_token).await;
+    let lb_final = common::get_token_balance(&mut ctx, &lb_token).await;
+
+    // With the fix: Lender A's recovered haircut is paid in the second withdrawal,
+    // so A receives the same total as B (both deposited 500 USDC, both withdraw
+    // at SF=0.75 → each gets 375 USDC total across all withdrawals).
+    // A: 125M (1st partial at SF=0.5) + 250M (2nd full at SF=0.75 + 62.5M recovered) = 375M
+    // B: 375M (full at SF=0.75)
+    //
+    // Without the fix, A would only get 125M + 187.5M = 312.5M (62.5M lost to borrower).
+    assert_eq!(
+        la_final, lb_final,
+        "Both lenders should receive equal total payouts: A={la_final} B={lb_final}"
+    );
+    assert_eq!(
+        la_final,
+        375 * USDC,
+        "Each lender should receive 375 USDC (75% of 500 at SF=0.75)"
+    );
+
+    // Verify that the recovered tokens actually left the vault — the unreserved
+    // vault balance should be zero (all non-reserved funds were paid to lenders).
+    let vault_bal = common::get_token_balance(&mut ctx, &vault).await;
+    let md_final = common::get_account_data(&mut ctx, &market).await;
+    let parsed_final = common::parse_market(&md_final);
+    let unreserved = vault_bal.saturating_sub(parsed_final.haircut_accumulator);
+    assert_eq!(
+        unreserved, 0,
+        "no unreserved surplus should remain for borrower to sweep: vault={vault_bal} reserved={}",
+        parsed_final.haircut_accumulator
+    );
+}
+
+// ===========================================================================
+// Same scenario as above but via force_close_position instead of withdraw
+// ===========================================================================
+
+#[tokio::test]
+async fn test_force_close_recovered_haircut_paid_to_lender() {
+    let (
+        market,
+        vault,
+        borrower,
+        lender_a,
+        la_token,
+        _lender_b,
+        _lb_token,
+        mint,
+        mint_auth,
+        blp,
+        mut ctx,
+    ) = setup_distressed_market().await;
+
+    let brw_token = common::create_token_account(&mut ctx, &mint, &borrower.pubkey()).await;
+
+    // --- Step 1: Lender A partially withdraws at distress ---
+    let half_scaled: u128 = 250_000_000;
+    let wdr1 = common::build_withdraw(
+        &market,
+        &lender_a.pubkey(),
+        &la_token,
+        &blp.pubkey(),
+        half_scaled,
+        0,
+    );
+    common::send_ok(&mut ctx, wdr1, &[&lender_a]).await;
+
+    let la_balance_after_w1 = common::get_token_balance(&mut ctx, &la_token).await;
+    let md1 = common::get_account_data(&mut ctx, &market).await;
+    let parsed1 = common::parse_market(&md1);
+    let sf_after_w1 = parsed1.settlement_factor_wad;
+    let acc_after_w1 = parsed1.haircut_accumulator;
+
+    assert!(sf_after_w1 > 0 && sf_after_w1 < WAD, "should be distressed");
+    assert!(acc_after_w1 > 0, "accumulator should record the gap");
+
+    let (la_pos_pda, _) = common::get_lender_position_pda(&market, &lender_a.pubkey());
+    let pos1 =
+        common::parse_lender_position(&common::get_account_data(&mut ctx, &la_pos_pda).await);
+    assert!(pos1.haircut_owed > 0, "haircut_owed should be nonzero");
+
+    // --- Step 2: Borrower repays 250 USDC to improve SF ---
+    common::mint_to_account(&mut ctx, &mint, &brw_token.pubkey(), &mint_auth, 250 * USDC).await;
+    let rep = common::build_repay(
+        &market,
+        &borrower.pubkey(),
+        &brw_token.pubkey(),
+        &mint,
+        &borrower.pubkey(),
+        250 * USDC,
+    );
+    common::send_ok(&mut ctx, rep, &[&borrower]).await;
+
+    let rs = common::build_re_settle(&market, &vault);
+    common::send_ok(&mut ctx, rs, &[]).await;
+
+    let md2 = common::get_account_data(&mut ctx, &market).await;
+    let parsed2 = common::parse_market(&md2);
+    assert!(
+        parsed2.settlement_factor_wad > sf_after_w1,
+        "SF should have improved"
+    );
+
+    // --- Step 3: Borrower force-closes Lender A's remaining position ---
+    // force_close sends payout to an escrow token account owned by the lender.
+    // We use la_token as the escrow destination.
+    let fc = common::build_force_close_position(
+        &market,
+        &borrower.pubkey(),
+        &lender_a.pubkey(),
+        &la_token,
+    );
+    common::send_ok(&mut ctx, fc, &[&borrower]).await;
+
+    let la_balance_after_fc = common::get_token_balance(&mut ctx, &la_token).await;
+    let tokens_received_fc = la_balance_after_fc - la_balance_after_w1;
+
+    // Deterministic scenario: SF=0.75, remaining_scaled=250M.
+    // base_payout = 250M * 0.75 = 187.5M
+    // recovered   = rebase(125M, 0.5, 0.75) = 125M - 62.5M = 62.5M
+    // total       = 187.5M + 62.5M = 250M
+    let expected_fc_transfer = 250 * USDC;
+    assert_eq!(
+        tokens_received_fc, expected_fc_transfer,
+        "force_close transfer should be base + recovered: got={tokens_received_fc} expected={expected_fc_transfer}"
+    );
+
+    // Lender A total: 125M (first withdraw) + 250M (force_close) = 375M
+    assert_eq!(
+        la_balance_after_fc,
+        375 * USDC,
+        "Lender A total should be 375 USDC"
+    );
+
+    // --- Step 4: Verify accumulator consistency ---
+    let md3 = common::get_account_data(&mut ctx, &market).await;
+    let parsed3 = common::parse_market(&md3);
+    let pos2 =
+        common::parse_lender_position(&common::get_account_data(&mut ctx, &la_pos_pda).await);
+
+    // Position should be zeroed out (force_close sets scaled_balance = 0)
+    assert_eq!(
+        pos2.scaled_balance, 0,
+        "scaled_balance should be 0 after force_close"
+    );
+
+    // The accumulator should equal the position's remaining haircut_owed
+    assert_eq!(
+        parsed3.haircut_accumulator, pos2.haircut_owed,
+        "accumulator should equal position's owed (only one position has haircut)"
+    );
+}
