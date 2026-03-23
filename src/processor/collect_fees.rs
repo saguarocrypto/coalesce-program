@@ -11,7 +11,7 @@ use crate::logic::validation::{
 };
 use crate::state::{Market, ProtocolConfig};
 
-/// CollectFees (disc 9)
+/// CollectFees (disc 8)
 /// Fee authority withdraws accrued protocol fees from a market vault.
 pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> ProgramResult {
     let _ = data; // No instruction data beyond discriminator
@@ -92,11 +92,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     }
 
     // SR-113: Block fee collection while lenders have pending withdrawals,
-    // UNLESS settlement_factor == WAD (fully solvent). When the settlement
-    // factor is WAD, the vault provably holds enough for all remaining lender
-    // payouts AND accrued fees — so collecting fees cannot harm lenders.
-    // The factor is immutable at WAD (re_settle enforces monotonicity and caps
-    // at WAD) and no new interest accrues post-maturity.
+    // UNLESS settlement_factor == WAD (fully solvent). When sf == WAD the
+    // market is solvent, but the vault may not hold surplus above lender
+    // claims (COAL-C01 removed fee reservation from settlement). The
+    // lender-claims cap below (applied after computing withdrawable)
+    // prevents draining below obligations.
     if market.scaled_total_supply() > 0 && settlement_factor != WAD {
         return Err(LendingError::LendersPendingWithdrawals.into());
     }
@@ -134,6 +134,33 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     let vault_balance = vault_token.amount();
     let withdrawable = core::cmp::min(accrued_fees, vault_balance);
 
+    // COAL-C01 compensation: cap fee withdrawal to vault surplus above total
+    // lender obligations.
+    //
+    // COAL-H01: Also subtract `haircut_accumulator`. Those tokens are not
+    // general surplus: they are exact unpaid value still reserved for lenders
+    // who already withdrew in distress and are waiting for later recovery.
+    let haircut_reserved = market.haircut_accumulator();
+    let withdrawable = if market.scaled_total_supply() > 0 {
+        let sf = market.scale_factor();
+        let total_normalized = market
+            .scaled_total_supply()
+            .checked_mul(sf)
+            .ok_or(LendingError::MathOverflow)?
+            .checked_div(WAD)
+            .ok_or(LendingError::MathOverflow)?;
+        let lender_claims =
+            u64::try_from(total_normalized).map_err(|_| LendingError::MathOverflow)?;
+        let safe_max = vault_balance
+            .saturating_sub(lender_claims)
+            .saturating_sub(haircut_reserved);
+        core::cmp::min(withdrawable, safe_max)
+    } else {
+        // Even with no remaining lenders, protect haircut reserve.
+        let safe_max = vault_balance.saturating_sub(haircut_reserved);
+        core::cmp::min(withdrawable, safe_max)
+    };
+
     if withdrawable == 0 {
         return Err(LendingError::NoFeesToCollect.into());
     }
@@ -158,6 +185,12 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(LendingError::InvalidTokenAccountOwner.into());
     }
 
+    // CEI: Update state BEFORE transfer CPI (Finding 3).
+    let remaining_fees = accrued_fees
+        .checked_sub(withdrawable)
+        .ok_or(LendingError::MathOverflow)?;
+    market.set_accrued_protocol_fees(remaining_fees);
+
     // Step 3: Transfer tokens (vault -> fee_destination) with PDA signing
     let auth_bump_ref = [market.market_authority_bump];
     let auth_seeds = [
@@ -172,12 +205,6 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         amount: withdrawable,
     }
     .invoke_signed(&[pinocchio::cpi::Signer::from(&auth_seeds)])?;
-
-    // Step 4: Update accrued_protocol_fees
-    let remaining_fees = accrued_fees
-        .checked_sub(withdrawable)
-        .ok_or(LendingError::MathOverflow)?;
-    market.set_accrued_protocol_fees(remaining_fees);
 
     log!(
         "evt:collect_fees market={} amount={}",

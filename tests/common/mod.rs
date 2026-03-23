@@ -31,12 +31,14 @@ pub const PROTOCOL_CONFIG_SIZE: usize = 194;
 pub const MARKET_SIZE: usize = 250;
 pub const LENDER_POSITION_SIZE: usize = 128;
 pub const BORROWER_WHITELIST_SIZE: usize = 96;
+pub const HAIRCUT_STATE_SIZE: usize = 88;
 
 // Discriminator constants (must match on-chain DISC_* values)
 pub const DISC_PROTOCOL_CONFIG: [u8; 8] = *b"COALPC__";
 pub const DISC_MARKET: [u8; 8] = *b"COALMKT_";
 pub const DISC_LENDER_POSITION: [u8; 8] = *b"COALLPOS";
 pub const DISC_BORROWER_WL: [u8; 8] = *b"COALBWL_";
+pub const DISC_HAIRCUT_STATE: [u8; 8] = *b"COALHCST";
 
 /// Deterministic epoch pinned by `start_context()` so that every test
 /// begins at the same wall-clock time regardless of real elapsed time.
@@ -122,6 +124,10 @@ pub fn get_borrower_whitelist_pda(borrower: &Pubkey) -> (Pubkey, u8) {
 
 pub fn get_blacklist_pda(blacklist_program: &Pubkey, address: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"blacklist", address.as_ref()], blacklist_program)
+}
+
+pub fn get_haircut_state_pda(market: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"haircut_state", market.as_ref()], &program_id())
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +266,7 @@ pub fn build_create_market(
             AccountMeta::new_readonly(blacklist_check, false), // blacklist_check PDA
             AccountMeta::new_readonly(system_program::id(), false), // system_program
             AccountMeta::new_readonly(spl_token::id(), false), // token_program
+            AccountMeta::new(get_haircut_state_pda(&market).0, false), // haircut_state_account
         ],
         data,
     }
@@ -471,6 +478,7 @@ pub fn build_withdraw(
             AccountMeta::new_readonly(blacklist_check, false), // blacklist_check PDA
             AccountMeta::new_readonly(protocol_config, false), // protocol_config PDA
             AccountMeta::new_readonly(spl_token::id(), false), // token_program
+            AccountMeta::new(get_haircut_state_pda(market).0, false), // haircut_state_account
         ],
         data,
     }
@@ -540,6 +548,41 @@ pub fn build_re_settle(market: &Pubkey, vault: &Pubkey) -> Instruction {
             AccountMeta::new(*market, false),         // market (writable)
             AccountMeta::new_readonly(*vault, false), // vault (read-only)
             AccountMeta::new_readonly(protocol_config, false), // protocol_config PDA (NEW)
+            AccountMeta::new_readonly(get_haircut_state_pda(market).0, false), // haircut_state_account
+        ],
+        data,
+    }
+}
+
+/// ForceClosePosition (disc 18)
+/// data = [18u8] (no additional data)
+///
+/// Borrower force-closes a lender position after maturity + grace period.
+pub fn build_force_close_position(
+    market: &Pubkey,
+    borrower: &Pubkey,
+    lender: &Pubkey,
+    escrow_token_account: &Pubkey,
+) -> Instruction {
+    let (vault, _) = get_vault_pda(market);
+    let (market_authority, _) = get_market_authority_pda(market);
+    let (protocol_config, _) = get_protocol_config_pda();
+    let (lender_position, _) = get_lender_position_pda(market, lender);
+
+    let data = vec![18u8]; // discriminator only
+
+    Instruction {
+        program_id: program_id(),
+        accounts: vec![
+            AccountMeta::new(*market, false),               // market (writable)
+            AccountMeta::new_readonly(*borrower, true),     // borrower (signer)
+            AccountMeta::new(lender_position, false),       // lender_position (writable)
+            AccountMeta::new(vault, false),                 // vault (writable)
+            AccountMeta::new(*escrow_token_account, false), // escrow_token_account (writable)
+            AccountMeta::new_readonly(market_authority, false), // market_authority PDA
+            AccountMeta::new_readonly(protocol_config, false), // protocol_config PDA
+            AccountMeta::new_readonly(spl_token::id(), false), // token_program
+            AccountMeta::new(get_haircut_state_pda(market).0, false), // haircut_state_account
         ],
         data,
     }
@@ -553,10 +596,13 @@ pub fn build_withdraw_excess(
     market: &Pubkey,
     borrower: &Pubkey,
     borrower_token_account: &Pubkey,
+    blacklist_program_id: &Pubkey,
 ) -> Instruction {
     let (vault, _) = get_vault_pda(market);
     let (market_authority, _) = get_market_authority_pda(market);
     let (protocol_config, _) = get_protocol_config_pda();
+    let (blacklist_check, _) = get_blacklist_pda(blacklist_program_id, borrower);
+    let (borrower_whitelist, _) = get_borrower_whitelist_pda(borrower);
 
     let data = vec![11u8]; // discriminator only
 
@@ -570,8 +616,70 @@ pub fn build_withdraw_excess(
             AccountMeta::new_readonly(market_authority, false), // market_authority PDA
             AccountMeta::new_readonly(spl_token::id(), false), // token_program
             AccountMeta::new_readonly(protocol_config, false), // protocol_config PDA
+            AccountMeta::new_readonly(blacklist_check, false), // blacklist_check
+            AccountMeta::new_readonly(borrower_whitelist, false), // borrower_whitelist
         ],
         data,
+    }
+}
+
+/// ClaimHaircut (disc 19)
+/// data = [19u8] (no additional data)
+pub fn build_claim_haircut(
+    market: &Pubkey,
+    lender: &Pubkey,
+    lender_token_account: &Pubkey,
+) -> Instruction {
+    let (vault_pda, _) = get_vault_pda(market);
+    let (market_authority, _) = get_market_authority_pda(market);
+    let (haircut_state, _) = get_haircut_state_pda(market);
+    let (protocol_config, _) = get_protocol_config_pda();
+    let (lender_position, _) = get_lender_position_pda(market, lender);
+
+    Instruction {
+        program_id: program_id(),
+        accounts: vec![
+            AccountMeta::new(*market, false),
+            AccountMeta::new_readonly(*lender, true),
+            AccountMeta::new(lender_position, false),
+            AccountMeta::new(*lender_token_account, false),
+            AccountMeta::new(vault_pda, false),
+            AccountMeta::new_readonly(market_authority, false),
+            AccountMeta::new(haircut_state, false),
+            AccountMeta::new_readonly(protocol_config, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+        ],
+        data: vec![19u8],
+    }
+}
+
+/// ForceClaimHaircut (disc 20)
+/// data = [20u8] (no additional data)
+pub fn build_force_claim_haircut(
+    market: &Pubkey,
+    borrower: &Pubkey,
+    lender_position: &Pubkey,
+    escrow_token_account: &Pubkey,
+) -> Instruction {
+    let (vault_pda, _) = get_vault_pda(market);
+    let (market_authority, _) = get_market_authority_pda(market);
+    let (haircut_state, _) = get_haircut_state_pda(market);
+    let (protocol_config, _) = get_protocol_config_pda();
+
+    Instruction {
+        program_id: program_id(),
+        accounts: vec![
+            AccountMeta::new(*market, false),
+            AccountMeta::new_readonly(*borrower, true),
+            AccountMeta::new(*lender_position, false),
+            AccountMeta::new(*escrow_token_account, false),
+            AccountMeta::new(vault_pda, false),
+            AccountMeta::new_readonly(market_authority, false),
+            AccountMeta::new(haircut_state, false),
+            AccountMeta::new_readonly(protocol_config, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+        ],
+        data: vec![20u8],
     }
 }
 
@@ -581,7 +689,45 @@ pub fn build_withdraw_excess(
 
 /// Create a new SPL Token mint with the given authority and decimals.
 /// Returns the mint Pubkey.
+/// USDC mint address on mainnet (EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v).
+/// COAL-L01: The program enforces this as the only accepted mint.
+pub const USDC_MINT_PUBKEY: Pubkey =
+    solana_sdk::pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+
+/// Create an SPL Token mint at the hardcoded USDC address by injecting the
+/// account directly into the test context. Returns the USDC mint pubkey.
 pub async fn create_mint(
+    ctx: &mut ProgramTestContext,
+    authority: &Keypair,
+    decimals: u8,
+) -> Pubkey {
+    let rent = ctx.banks_client.get_rent().await.unwrap();
+    let mint_rent = rent.minimum_balance(spl_token::state::Mint::LEN);
+
+    // Build SPL Token mint account data (82 bytes) as raw bytes.
+    // Layout: [4 COption tag][32 mint_authority][8 supply][1 decimals][1 is_initialized][4 COption tag][32 freeze_authority]
+    let mut data = vec![0u8; spl_token::state::Mint::LEN];
+    // mint_authority = Some(authority)
+    data[0..4].copy_from_slice(&1u32.to_le_bytes()); // COption::Some
+    data[4..36].copy_from_slice(&authority.pubkey().to_bytes());
+    // supply = 0 (already zeroed)
+    // decimals
+    data[44] = decimals;
+    // is_initialized = true
+    data[45] = 1;
+    // freeze_authority = None (already zeroed)
+
+    let mut account =
+        AccountSharedData::new(mint_rent, spl_token::state::Mint::LEN, &spl_token::id());
+    account.set_data_from_slice(&data);
+    ctx.set_account(&USDC_MINT_PUBKEY, &account);
+
+    USDC_MINT_PUBKEY
+}
+
+/// Create a new SPL Token mint with a random address (not USDC).
+/// Used for negative tests that verify non-USDC mints are rejected.
+pub async fn create_random_mint(
     ctx: &mut ProgramTestContext,
     authority: &Keypair,
     decimals: u8,
@@ -754,7 +900,7 @@ pub async fn setup_protocol(
 /// Returns the market Pubkey.
 pub async fn setup_market_full(
     ctx: &mut ProgramTestContext,
-    admin: &Keypair,
+    _admin: &Keypair,
     borrower: &Keypair,
     mint: &Pubkey,
     blacklist_program: &Pubkey,
@@ -970,6 +1116,7 @@ pub struct ParsedMarket {
     pub last_accrual_timestamp: i64,
     pub settlement_factor_wad: u128,
     pub bump: u8,
+    pub haircut_accumulator: u64,
 }
 
 pub fn parse_market(data: &[u8]) -> ParsedMarket {
@@ -1010,6 +1157,7 @@ pub fn parse_market(data: &[u8]) -> ParsedMarket {
         last_accrual_timestamp: i64::from_le_bytes(d[195..203].try_into().unwrap()),
         settlement_factor_wad: u128::from_le_bytes(d[203..219].try_into().unwrap()),
         bump: d[219],
+        haircut_accumulator: u64::from_le_bytes(d[220..228].try_into().unwrap()),
     }
 }
 
@@ -1019,6 +1167,8 @@ pub struct ParsedLenderPosition {
     pub lender: [u8; 32],
     pub scaled_balance: u128,
     pub bump: u8,
+    pub haircut_owed: u64,
+    pub withdrawal_sf: u128,
 }
 
 pub fn parse_lender_position(data: &[u8]) -> ParsedLenderPosition {
@@ -1041,11 +1191,42 @@ pub fn parse_lender_position(data: &[u8]) -> ParsedLenderPosition {
     market.copy_from_slice(&d[0..32]);
     let mut lender = [0u8; 32];
     lender.copy_from_slice(&d[32..64]);
+    // haircut_owed is at struct offset 90, minus 9-byte prefix = d[81..89]
+    let haircut_owed = u64::from_le_bytes(d[81..89].try_into().unwrap());
+    // withdrawal_sf is at struct offset 98, minus 9-byte prefix = d[89..105]
+    let withdrawal_sf = u128::from_le_bytes(d[89..105].try_into().unwrap());
     ParsedLenderPosition {
         market,
         lender,
         scaled_balance: u128::from_le_bytes(d[64..80].try_into().unwrap()),
         bump: d[80],
+        haircut_owed,
+        withdrawal_sf,
+    }
+}
+
+/// Parsed HaircutState fields (from 88-byte account data).
+pub struct ParsedHaircutState {
+    pub claim_weight_sum: u128,
+    pub claim_offset_sum: u128,
+}
+
+pub fn parse_haircut_state(data: &[u8]) -> ParsedHaircutState {
+    assert!(
+        data.len() >= HAIRCUT_STATE_SIZE,
+        "HaircutState data too short"
+    );
+    assert_eq!(
+        &data[0..8],
+        &DISC_HAIRCUT_STATE,
+        "HaircutState discriminator mismatch"
+    );
+    // Skip 9-byte prefix: discriminator (8) + version (1)
+    // market at offset 9 (32 bytes), claim_weight_sum at offset 41 (16 bytes),
+    // claim_offset_sum at offset 57 (16 bytes)
+    ParsedHaircutState {
+        claim_weight_sum: u128::from_le_bytes(data[41..57].try_into().unwrap()),
+        claim_offset_sum: u128::from_le_bytes(data[57..73].try_into().unwrap()),
     }
 }
 

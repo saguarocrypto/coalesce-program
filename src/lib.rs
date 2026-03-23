@@ -88,6 +88,13 @@ fn process_instruction(
         11 => processor::withdraw_excess(program_id, accounts, &data[1..]),
 
         // ═══════════════════════════════════════════════════════════════
+        // POST-SETTLEMENT (18-20)
+        // ═══════════════════════════════════════════════════════════════
+        18 => processor::force_close_position(program_id, accounts, &data[1..]),
+        19 => processor::claim_haircut(program_id, accounts, &data[1..]),
+        20 => processor::force_claim_haircut(program_id, accounts, &data[1..]),
+
+        // ═══════════════════════════════════════════════════════════════
         // ACCESS CONTROL (12-16)
         // ═══════════════════════════════════════════════════════════════
         12 => processor::set_borrower_whitelist(program_id, accounts, &data[1..]),

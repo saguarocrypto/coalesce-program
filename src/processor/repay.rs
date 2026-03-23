@@ -12,9 +12,13 @@ use crate::logic::validation::{
 };
 use crate::state::{BorrowerWhitelist, Market, ProtocolConfig};
 
-/// Repay (disc 7)
+/// Repay (disc 5)
 /// Repay USDC to the market vault. Anyone may call.
 /// Updates the borrower's current_borrowed to allow re-borrowing after repayment.
+///
+/// Compliance note: No blacklist check is performed on the payer because repayment
+/// reduces protocol risk. Blocking a sanctioned entity from repaying would leave
+/// the market under-collateralized, harming innocent lenders.
 pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> ProgramResult {
     if accounts.len() < 8 {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -37,9 +41,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     if data.len() < 8 {
         return Err(ProgramError::InvalidInstructionData);
     }
-    let amount = u64::from_le_bytes([
-        data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
-    ]);
+    let amount = u64::from_le_bytes(
+        data[0..8]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidInstructionData)?,
+    );
 
     // SR-045: amount > 0
     if amount == 0 {
@@ -118,36 +124,33 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     let current_ts = get_unix_timestamp()?;
     accrue_interest(market, config, current_ts)?;
 
+    // Finding 9: Cap repayment at per-market principal outstanding.
+    // principal_repaid = total_repaid - total_interest_repaid (interest goes to a separate bucket)
+    // market_outstanding = total_borrowed - principal_repaid
+    let principal_repaid = market
+        .total_repaid()
+        .checked_sub(market.total_interest_repaid())
+        .ok_or(LendingError::MathOverflow)?;
+    let market_outstanding = market
+        .total_borrowed()
+        .checked_sub(principal_repaid)
+        .ok_or(LendingError::MathOverflow)?;
+    if amount > market_outstanding {
+        return Err(LendingError::RepaymentExceedsDebt.into());
+    }
+
     // SR-123: Verify vault account is owned by token program before transfer
     if unsafe { vault_account.owner() } != &pinocchio_token::ID {
         return Err(LendingError::InvalidAccountOwner.into());
     }
 
-    // Step 2: Transfer tokens (payer -> vault)
-    pinocchio_token::instructions::Transfer {
-        from: payer_token_account,
-        to: vault_account,
-        authority: payer,
-        amount,
-    }
-    .invoke()?;
-
-    // Step 3: Update market
-    let new_total_repaid = market
-        .total_repaid()
-        .checked_add(amount)
-        .ok_or(LendingError::MathOverflow)?;
-    market.set_total_repaid(new_total_repaid);
-
-    // Step 4: Update borrower's current debt (allows re-borrowing after repayment)
-    // Derive the expected whitelist PDA from the market's borrower
+    // Step 2: Validate and load borrower whitelist (needed for checks before transfer)
     let borrower_key: &[u8; 32] = &market.borrower;
     let (expected_wl_pda, _) =
         Address::find_program_address(&[SEED_BORROWER_WHITELIST, borrower_key], program_id);
     if borrower_whitelist_account.address() != &expected_wl_pda {
         return Err(LendingError::InvalidPDA.into());
     }
-    // Verify ownership before deserializing
     if !borrower_whitelist_account.owned_by(program_id) {
         return Err(LendingError::InvalidAccountOwner.into());
     }
@@ -158,22 +161,36 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     let wl: &mut BorrowerWhitelist =
         bytemuck::try_from_bytes_mut(wl_data).map_err(|_| ProgramError::InvalidAccountData)?;
 
-    // Discriminator check for BorrowerWhitelist
     if wl.discriminator != DISC_BORROWER_WL {
         return Err(ProgramError::InvalidAccountData);
     }
 
     // SR-116: Validate repayment does not exceed current debt
-    // This prevents silent loss of funds from overpayment
     let current = wl.current_borrowed();
     if amount > current {
         return Err(LendingError::RepaymentExceedsDebt.into());
     }
-    // SR-125: Use checked_sub for consistency even after guard
+
+    // CEI: Update all state BEFORE transfer CPI (Finding 3).
+    let new_total_repaid = market
+        .total_repaid()
+        .checked_add(amount)
+        .ok_or(LendingError::MathOverflow)?;
+    market.set_total_repaid(new_total_repaid);
+
     let new_borrowed = current
         .checked_sub(amount)
         .ok_or(LendingError::MathOverflow)?;
     wl.set_current_borrowed(new_borrowed);
+
+    // Step 3: Transfer tokens (payer -> vault)
+    pinocchio_token::instructions::Transfer {
+        from: payer_token_account,
+        to: vault_account,
+        authority: payer,
+        amount,
+    }
+    .invoke()?;
 
     log!(
         "evt:repay market={} payer={} amount={} borrower_debt={}",

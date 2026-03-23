@@ -231,10 +231,9 @@ fn tla_normalized_total_supply(state: &TlaAbstractState) -> u128 {
 }
 
 /// TLA+ AvailableForLenders
+/// COAL-C01: no fee reservation; full vault is available for lenders.
 fn tla_available_for_lenders(state: &TlaAbstractState) -> u128 {
-    let vb = state.vault_balance;
-    let fees = state.accrued_protocol_fees;
-    vb - vb.min(fees)
+    state.vault_balance
 }
 
 /// TLA+ ComputeSettlementFactor
@@ -302,7 +301,7 @@ fn tla_accrue_interest_effect(
         tla_mul_wad(days_growth, wad + remaining_delta),
     );
 
-    // Fee computation uses new_sf (matching production interest.rs)
+    // Fee computation uses pre-accrual scale_factor (Finding 10 fix)
     let growth_wad = tla_mul_wad(days_growth, wad + remaining_delta);
     let interest_delta_wad = growth_wad.saturating_sub(wad);
     let fee_delta_wad = if fee_rate_bps > 0 {
@@ -312,7 +311,7 @@ fn tla_accrue_interest_effect(
     };
     let fee_normalized = if fee_rate_bps > 0 {
         tla_div(
-            tla_div(state.scaled_total_supply * new_sf, wad) * fee_delta_wad,
+            tla_div(state.scaled_total_supply * state.scale_factor, wad) * fee_delta_wad,
             wad,
         )
     } else {
@@ -816,11 +815,10 @@ fn make_concrete_state(current_time: i64) -> RustConcreteState {
 }
 
 /// Compute settlement factor from concrete state (mirrors TLA+ ComputeSettlementFactor).
+/// COAL-C01: no fee reservation; full vault is available for lenders.
 fn compute_settlement_factor_concrete(market: &Market, vault_balance: u64) -> u128 {
     let total_norm = tla_div(market.scaled_total_supply() * market.scale_factor(), WAD);
-    let vb = u128::from(vault_balance);
-    let fees = u128::from(market.accrued_protocol_fees());
-    let avail = vb - vb.min(fees);
+    let avail = u128::from(vault_balance);
     if total_norm == 0 {
         WAD
     } else {
@@ -864,11 +862,8 @@ fn concrete_deposit(state: &mut RustConcreteState, lender_idx: usize, amount: u6
 fn concrete_borrow(state: &mut RustConcreteState, amount: u64) {
     assert!(amount > 0);
     concrete_accrue(state, true);
-    let fees_reserved = state
-        .vault_balance
-        .min(state.market.accrued_protocol_fees());
-    let borrowable = state.vault_balance - fees_reserved;
-    assert!(amount <= borrowable);
+    // COAL-L02: Full vault balance is borrowable (no fee reservation)
+    assert!(amount <= state.vault_balance);
     let new_wl = state.whitelist.current_borrowed() + amount;
     assert!(new_wl <= state.whitelist.max_borrow_capacity());
     state
@@ -909,14 +904,33 @@ fn concrete_withdraw(state: &mut RustConcreteState, lender_idx: usize) {
     state.prev_settlement_factor = sf_wad;
 }
 
-fn concrete_collect_fees(state: &mut RustConcreteState) {
+/// COAL-C01: cap fee withdrawal above lender claims when supply > 0.
+fn concrete_collect_fees(state: &mut RustConcreteState) -> bool {
     concrete_accrue(state, true);
     let fees = state.market.accrued_protocol_fees();
-    assert!(fees > 0);
-    let withdrawable = fees.min(state.vault_balance);
-    assert!(withdrawable > 0);
+    if fees == 0 {
+        return false;
+    }
+    let mut withdrawable = fees.min(state.vault_balance);
+    if state.market.scaled_total_supply() > 0 {
+        let sf = state.market.scale_factor();
+        let total_norm = state
+            .market
+            .scaled_total_supply()
+            .checked_mul(sf)
+            .unwrap()
+            .checked_div(WAD)
+            .unwrap();
+        let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
+        let safe_max = state.vault_balance.saturating_sub(lender_claims);
+        withdrawable = withdrawable.min(safe_max);
+    }
+    if withdrawable == 0 {
+        return false;
+    }
     state.vault_balance -= withdrawable;
     state.market.set_accrued_protocol_fees(fees - withdrawable);
+    true
 }
 
 fn concrete_re_settle(state: &mut RustConcreteState) {
@@ -1234,8 +1248,18 @@ fn refinement_proof_collect_fees() {
         state.market.set_accrued_protocol_fees(100);
     }
 
+    // COAL-C01: fees are only collectable when vault > lender claims.
+    // Simulate borrower interest repayment funding the vault.
+    let sf = state.market.scale_factor();
+    let total_norm = state.market.scaled_total_supply().checked_mul(sf).unwrap() / WAD;
+    let lender_claims = u64::try_from(total_norm).unwrap();
+    let needed = u128::from(lender_claims) + u128::from(state.market.accrued_protocol_fees());
+    if u128::from(state.vault_balance) < needed {
+        state.vault_balance = u64::try_from(needed).unwrap();
+    }
+
     let before = state.clone();
-    concrete_collect_fees(&mut state);
+    assert!(concrete_collect_fees(&mut state));
     let after = state;
 
     let params = ActionParams::default();
@@ -1467,9 +1491,9 @@ fn refinement_proof_withdraw_excess() {
     concrete_tick(&mut state, time_to_maturity);
     concrete_withdraw(&mut state, 0);
 
-    // Collect fees if any
+    // Collect fees if any (COAL-C01: may be blocked by lender-claims cap)
     if state.market.accrued_protocol_fees() > 0 && state.vault_balance > 0 {
-        concrete_collect_fees(&mut state);
+        let _ = concrete_collect_fees(&mut state);
     }
 
     // Skip if preconditions aren't met
@@ -2160,9 +2184,8 @@ fn try_execute_concrete(state: &mut RustConcreteState, action: &TraceAction) -> 
             if accrue_interest(&mut test_market, &state.config, state.current_time).is_err() {
                 return false;
             }
-            let fees_reserved = state.vault_balance.min(test_market.accrued_protocol_fees());
-            let borrowable = state.vault_balance - fees_reserved;
-            if *amount > borrowable {
+            // COAL-L02: No fee reservation; use full vault balance
+            if *amount > state.vault_balance {
                 return false;
             }
             let new_wl = state.whitelist.current_borrowed() + *amount;
@@ -2231,8 +2254,8 @@ fn try_execute_concrete(state: &mut RustConcreteState, action: &TraceAction) -> 
             if w == 0 {
                 return false;
             }
-            concrete_collect_fees(state);
-            true
+            // COAL-C01: cap may zero out withdrawable even when w > 0
+            concrete_collect_fees(state)
         },
         TraceAction::ReSettle => {
             if state.market.scale_factor() == 0 || state.market.settlement_factor_wad() == 0 {
@@ -2361,9 +2384,8 @@ fn tla_model_step(
             state.accrued_protocol_fees = new_fees;
             state.last_accrual_timestamp = new_last;
 
-            let fees_reserved = state.vault_balance.min(new_fees);
-            let borrowable = state.vault_balance - fees_reserved;
-            if amt > borrowable {
+            // COAL-L02: No fee reservation; use full vault balance
+            if amt > state.vault_balance {
                 return false;
             }
             if state.whitelist_current_borrowed + amt > tla_max_capacity {
@@ -2467,7 +2489,16 @@ fn tla_model_step(
             if new_fees == 0 {
                 return false;
             }
-            let withdrawable = new_fees.min(state.vault_balance);
+            let mut withdrawable = new_fees.min(state.vault_balance);
+            // COAL-C01: cap fee withdrawal above lender claims when supply > 0
+            if state.scaled_total_supply > 0 {
+                let total_norm = state.scaled_total_supply.checked_mul(new_sf).unwrap() / WAD;
+                let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
+                let safe_max = state
+                    .vault_balance
+                    .saturating_sub(u128::from(lender_claims));
+                withdrawable = withdrawable.min(safe_max);
+            }
             if withdrawable == 0 {
                 return false;
             }
@@ -2493,7 +2524,8 @@ fn tla_model_step(
             state.scale_factor = new_sf;
             state.last_accrual_timestamp = new_last;
             let total_norm = tla_div(state.scaled_total_supply * new_sf, tla_wad);
-            let avail = state.vault_balance - state.vault_balance.min(state.accrued_protocol_fees);
+            // COAL-C01: no fee reservation; full vault is available
+            let avail = state.vault_balance;
             let new_factor = if total_norm == 0 {
                 tla_wad
             } else {

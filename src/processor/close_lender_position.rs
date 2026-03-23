@@ -120,6 +120,12 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
         if position.scaled_balance() != 0 {
             return Err(LendingError::PositionNotEmpty.into());
         }
+
+        // COAL-H01: Cannot close position with pending haircut claim.
+        // Lender must call claim_haircut first to recover owed funds.
+        if position.haircut_owed() != 0 {
+            return Err(LendingError::PositionNotEmpty.into());
+        }
     }
 
     // Step 2: Zero account data

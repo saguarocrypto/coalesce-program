@@ -69,29 +69,28 @@ fn expected_settlement_factor(
     vault_balance: u64,
     scaled_total_supply: u128,
     scale_factor: u128,
-    accrued_fees: u64,
+    _haircut_accumulator: u64,
+    claim_weight_sum: u128,
+    claim_offset_sum: u128,
 ) -> u128 {
     let vault_bal_128 = u128::from(vault_balance);
-    let fees_128 = u128::from(accrued_fees);
-    let fees_reserved = if vault_bal_128 < fees_128 {
-        vault_bal_128
-    } else {
-        fees_128
-    };
-    let available_for_lenders = vault_bal_128 - fees_reserved;
     let total_normalized = scaled_total_supply
         .checked_mul(scale_factor)
         .unwrap()
         .checked_div(WAD)
         .unwrap();
 
-    if total_normalized == 0 {
+    // COAL-H01: Conservative re_settle formula.
+    //   new_sf = WAD * (V + O) / (R + W)
+    let denominator = total_normalized + claim_weight_sum;
+    if denominator == 0 {
         WAD
     } else {
-        let raw = available_for_lenders
+        let numerator_inner = vault_bal_128 + claim_offset_sum;
+        let raw = numerator_inner
             .checked_mul(WAD)
             .unwrap()
-            .checked_div(total_normalized)
+            .checked_div(denominator)
             .unwrap();
         let capped = if raw > WAD { WAD } else { raw };
         if capped < 1 {
@@ -299,11 +298,16 @@ async fn test_re_settle_success() {
     let md_pre = common::get_account_data(&mut ctx, &market).await;
     let parsed_pre = common::parse_market(&md_pre);
     let vault_balance_pre = common::get_token_balance(&mut ctx, &vault).await;
+    let (haircut_state_pda, _) = common::get_haircut_state_pda(&market);
+    let hs_data = common::get_account_data(&mut ctx, &haircut_state_pda).await;
+    let hs = common::parse_haircut_state(&hs_data);
     let expected_factor = expected_settlement_factor(
         vault_balance_pre,
         parsed_pre.scaled_total_supply,
         parsed_pre.scale_factor,
-        parsed_pre.accrued_protocol_fees,
+        parsed_pre.haircut_accumulator,
+        hs.claim_weight_sum,
+        hs.claim_offset_sum,
     );
     assert!(
         expected_factor > old_factor,
@@ -776,13 +780,18 @@ async fn test_re_settle_not_improved() {
         "lender2 token balance changed on rejected re_settle"
     );
 
-    // Boundary neighbor: 1-unit additional repayment should make factor improvable.
+    // Boundary neighbor: additional repayment exceeding the haircut accumulator
+    // should make the settlement factor improvable.
+    // With haircut_acc ≈ 300 USDC (lender1's 500 entitled − 200 payout) and
+    // remaining vault ≈ 200 USDC, we need vault > 500 USDC for improvement.
+    // Repaying 301 USDC puts vault at ~501 USDC, crossing the threshold.
+    let boundary_repay = 301 * USDC;
     common::mint_to_account(
         &mut ctx,
         &mint,
         &borrower_token.pubkey(),
         &mint_authority,
-        1,
+        boundary_repay,
     )
     .await;
     let rep_ix2 = common::build_repay(
@@ -791,7 +800,7 @@ async fn test_re_settle_not_improved() {
         &borrower_token.pubkey(),
         &mint,
         &borrower.pubkey(),
-        1,
+        boundary_repay,
     );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
@@ -805,15 +814,20 @@ async fn test_re_settle_not_improved() {
     let md_pre = common::get_account_data(&mut ctx, &market).await;
     let parsed_pre = common::parse_market(&md_pre);
     let vault_balance_pre = common::get_token_balance(&mut ctx, &vault).await;
+    let (haircut_state_pda, _) = common::get_haircut_state_pda(&market);
+    let hs_data = common::get_account_data(&mut ctx, &haircut_state_pda).await;
+    let hs = common::parse_haircut_state(&hs_data);
     let expected_factor = expected_settlement_factor(
         vault_balance_pre,
         parsed_pre.scaled_total_supply,
         parsed_pre.scale_factor,
-        parsed_pre.accrued_protocol_fees,
+        parsed_pre.haircut_accumulator,
+        hs.claim_weight_sum,
+        hs.claim_offset_sum,
     );
     assert!(
         expected_factor > parsed.settlement_factor_wad,
-        "1-unit repayment should improve settlement factor in this domain"
+        "boundary repayment exceeding haircut should improve settlement factor"
     );
 
     let rs_ix = common::build_re_settle(&market, &vault);
@@ -1031,11 +1045,16 @@ async fn test_re_settle_permissionless() {
     let md_pre = common::get_account_data(&mut ctx, &market).await;
     let parsed_pre = common::parse_market(&md_pre);
     let vault_balance_pre = common::get_token_balance(&mut ctx, &vault).await;
+    let (haircut_state_pda, _) = common::get_haircut_state_pda(&market);
+    let hs_data = common::get_account_data(&mut ctx, &haircut_state_pda).await;
+    let hs = common::parse_haircut_state(&hs_data);
     let expected_factor = expected_settlement_factor(
         vault_balance_pre,
         parsed_pre.scaled_total_supply,
         parsed_pre.scale_factor,
-        parsed_pre.accrued_protocol_fees,
+        parsed_pre.haircut_accumulator,
+        hs.claim_weight_sum,
+        hs.claim_offset_sum,
     );
     assert!(
         expected_factor > parsed.settlement_factor_wad,
@@ -1295,7 +1314,6 @@ async fn test_re_settle_after_additional_repayment() {
     let parsed_pre = common::parse_market(&md_pre);
     let scaled_total = parsed_pre.scaled_total_supply;
     let scale_factor = parsed_pre.scale_factor;
-    let accrued_fees = parsed_pre.accrued_protocol_fees;
 
     // Call re_settle
     let rs_ix = common::build_re_settle(&market, &vault);
@@ -1321,40 +1339,18 @@ async fn test_re_settle_after_additional_repayment() {
         old_factor
     );
 
-    // Verify new factor calculation:
-    // new_factor = available_for_lenders * WAD / normalized_total_supply
-    // where:
-    //   available_for_lenders = vault_balance - min(accrued_fees, vault_balance)
-    //   normalized_total_supply = scaled_total_supply * scale_factor / WAD
-    let vault_bal_128 = u128::from(vault_balance);
-    let fees_128 = u128::from(accrued_fees);
-    let fees_reserved = if vault_bal_128 < fees_128 {
-        vault_bal_128
-    } else {
-        fees_128
-    };
-    let available_for_lenders = vault_bal_128 - fees_reserved;
-    let total_normalized = (scaled_total as u128)
-        .checked_mul(scale_factor as u128)
-        .unwrap()
-        .checked_div(WAD)
-        .unwrap();
-
-    let expected_factor = if total_normalized == 0 {
-        WAD
-    } else {
-        let raw = available_for_lenders
-            .checked_mul(WAD)
-            .unwrap()
-            .checked_div(total_normalized)
-            .unwrap();
-        let capped = if raw > WAD { WAD } else { raw };
-        if capped < 1 {
-            1
-        } else {
-            capped
-        }
-    };
+    // Verify new factor via the shared helper (COAL-H01 conservative formula)
+    let (haircut_state_pda, _) = common::get_haircut_state_pda(&market);
+    let hs_data = common::get_account_data(&mut ctx, &haircut_state_pda).await;
+    let hs = common::parse_haircut_state(&hs_data);
+    let expected_factor = expected_settlement_factor(
+        vault_balance,
+        scaled_total,
+        scale_factor,
+        parsed_pre.haircut_accumulator,
+        hs.claim_weight_sum,
+        hs.claim_offset_sum,
+    );
 
     assert_eq!(
         new_factor, expected_factor,

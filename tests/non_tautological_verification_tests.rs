@@ -171,10 +171,10 @@ fn expected_fee_delta(
         return 0;
     }
 
-    let new_sf = expected_scale_factor(initial_sf, annual_bps, elapsed_seconds);
     let fee_delta_wad =
         expected_interest_delta_wad(annual_bps, elapsed_seconds) * u128::from(fee_rate_bps) / BPS;
-    let fee = scaled_supply * new_sf / WAD * fee_delta_wad / WAD;
+    // Use pre-accrual initial_sf (matches on-chain Finding 10 fix)
+    let fee = scaled_supply * initial_sf / WAD * fee_delta_wad / WAD;
     u64::try_from(fee).expect("fee must fit u64")
 }
 
@@ -688,61 +688,52 @@ fn v3_4_elevated_sf_partial_settlement() {
 
 /// V4.1: Full repayment => settlement = WAD.
 ///
-/// vault=1000000, fees=0, supply=1000000, sf=WAD.
+/// vault=1000000, supply=1000000, sf=WAD.
 ///
 /// Hand computation:
-///   available = 1000000 - min(1000000, 0) = 1000000
+///   available = vault_balance = 1000000
 ///   total_normalized = 1000000 * WAD / WAD = 1000000
 ///   settlement = 1000000 * WAD / 1000000 = WAD
 ///
-/// Break-it: If fees are not subtracted, settlement is correct.
-///           If supply uses wrong sf, settlement != WAD.
+/// Break-it: If supply uses wrong sf, settlement != WAD.
 #[test]
 fn v4_1_full_repayment_settlement_is_wad() {
     let vault: u128 = 1_000_000;
-    let fees: u128 = 0;
     let supply: u128 = 1_000_000;
     let sf: u128 = WAD;
 
-    let available = vault - core::cmp::min(vault, fees);
     let total_normalized = supply * sf / WAD;
-    let settlement = compute_settlement_factor(available, total_normalized);
+    let settlement = compute_settlement_factor(vault, total_normalized);
     assert_eq!(settlement, WAD);
-    assert_eq!(
-        compute_settlement_factor(available + 1, total_normalized),
-        WAD
-    );
+    assert_eq!(compute_settlement_factor(vault + 1, total_normalized), WAD);
 }
 
 /// V4.2: 50% default => settlement ≈ 0.5*WAD.
 ///
-/// vault=500000, fees=0, supply=1000000, sf=WAD.
+/// vault=500000, supply=1000000, sf=WAD.
 ///
 /// Hand computation:
-///   available = 500000
+///   available = vault_balance = 500000
 ///   total_normalized = 1000000
 ///   settlement = 500000 * WAD / 1000000 = WAD / 2
 ///
-/// Break-it: If available doesn't subtract fees, settlement is 0.5*WAD (correct
-///           for this case). If supply is wrong, settlement is wrong.
+/// Break-it: If supply is wrong, settlement is wrong.
 #[test]
 fn v4_2_fifty_percent_default() {
     let vault: u128 = 500_000;
-    let fees: u128 = 0;
     let supply: u128 = 1_000_000;
     let sf: u128 = WAD;
 
-    let available = vault - core::cmp::min(vault, fees);
     let total_normalized = supply * sf / WAD;
-    let settlement = compute_settlement_factor(available, total_normalized);
+    let settlement = compute_settlement_factor(vault, total_normalized);
     assert_eq!(settlement, WAD / 2);
     assert_eq!(
-        compute_settlement_factor(available - 1, total_normalized),
-        (available - 1) * WAD / total_normalized
+        compute_settlement_factor(vault - 1, total_normalized),
+        (vault - 1) * WAD / total_normalized
     );
     assert_eq!(
-        compute_settlement_factor(available + 1, total_normalized),
-        (available + 1) * WAD / total_normalized
+        compute_settlement_factor(vault + 1, total_normalized),
+        (vault + 1) * WAD / total_normalized
     );
 }
 
@@ -760,47 +751,36 @@ fn v4_2_fifty_percent_default() {
 #[test]
 fn v4_3_over_repayment_capped_at_wad() {
     let vault: u128 = 2_000_000;
-    let fees: u128 = 0;
     let supply: u128 = 1_000_000;
     let sf: u128 = WAD;
 
-    let available = vault - core::cmp::min(vault, fees);
     let total_normalized = supply * sf / WAD;
-    let settlement = compute_settlement_factor(available, total_normalized);
+    let settlement = compute_settlement_factor(vault, total_normalized);
     assert_eq!(settlement, WAD, "Settlement must be capped at WAD");
     assert_eq!(compute_settlement_factor(0, total_normalized), 1);
 }
 
-/// V4.4: Fee reservation reduces available for lenders.
+/// V4.4: Settlement uses full vault balance (no fee reservation).
 ///
-/// vault=1000000, fees=200000, supply=1000000, sf=WAD.
+/// vault=1000000, supply=1000000, sf=WAD.
 ///
 /// Hand computation:
-///   fees_reserved = min(1000000, 200000) = 200000
-///   available = 1000000 - 200000 = 800000
+///   available = vault_balance = 1000000
 ///   total_normalized = 1000000
-///   settlement = 800000 * WAD / 1000000 = 0.8 * WAD = 800_000_000_000_000_000
+///   settlement = 1000000 * WAD / 1000000 = WAD
 ///
-/// Break-it: If fees are not reserved, settlement = WAD (lenders get full).
+/// Fees are collected separately and do not reduce settlement.
 #[test]
-fn v4_4_fee_reservation_reduces_settlement() {
+fn v4_4_settlement_uses_full_vault_balance() {
     let vault: u128 = 1_000_000;
-    let fees: u128 = 200_000;
     let supply: u128 = 1_000_000;
     let sf: u128 = WAD;
 
-    let fees_reserved = core::cmp::min(vault, fees);
-    let available = vault - fees_reserved;
     let total_normalized = supply * sf / WAD;
-    let settlement = compute_settlement_factor(available, total_normalized);
+    let settlement = compute_settlement_factor(vault, total_normalized);
 
-    assert_eq!(fees_reserved, 200_000);
-    assert_eq!(available, 800_000);
-    assert_eq!(settlement, 800_000_000_000_000_000); // 0.8 * WAD
-    assert_eq!(
-        compute_settlement_factor(vault - core::cmp::min(vault, vault), total_normalized),
-        1
-    );
+    assert_eq!(settlement, WAD);
+    assert_eq!(compute_settlement_factor(0, total_normalized), 1);
 }
 
 /// V4.5: Settlement with elevated scale factor.
@@ -816,19 +796,17 @@ fn v4_4_fee_reservation_reduces_settlement() {
 #[test]
 fn v4_5_settlement_with_elevated_sf() {
     let vault: u128 = 1_100_000;
-    let fees: u128 = 0;
     let supply: u128 = 1_000_000;
     let sf: u128 = 1_100_000_000_000_000_000; // 1.1 * WAD
 
-    let available = vault - core::cmp::min(vault, fees);
     let total_normalized = supply * sf / WAD;
-    let settlement = compute_settlement_factor(available, total_normalized);
+    let settlement = compute_settlement_factor(vault, total_normalized);
 
     assert_eq!(total_normalized, 1_100_000);
     assert_eq!(settlement, WAD);
     assert_eq!(
-        compute_settlement_factor(available - 1, total_normalized),
-        (available - 1) * WAD / total_normalized
+        compute_settlement_factor(vault - 1, total_normalized),
+        (vault - 1) * WAD / total_normalized
     );
 }
 
@@ -1061,48 +1039,38 @@ fn v6_2_two_lenders_split_proportionally() {
     assert_eq!(payout_a + payout_b, vault);
 }
 
-/// V6.3: Lifecycle with 50% default and fees.
+/// V6.3: Lifecycle with 50% default (settlement uses full vault balance).
 ///
 /// Deposit: 1,000,000 at sf=WAD. Rate: 10%. Fee: 5%. Duration: 1 year.
 /// Only 600,000 in vault at maturity (borrower partially defaulted).
 ///
 /// Step 1: sf after 1 year = 1.1*WAD
-/// Step 2: Fees = 5_500 (from V5.1 but with supply=1_000_000)
-///   Actually: fee = supply * new_sf / WAD * fee_delta_wad / WAD
-///           = 1_000_000 * 1.1 * (1/200) = 5_500
-/// Step 3: Settlement
-///   fees_reserved = min(600000, 5500) = 5500
-///   available = 600000 - 5500 = 594500
+/// Step 2: Fees = 5_500 (collected separately, not reserved from vault)
+/// Step 3: Settlement (uses full vault balance)
+///   available = vault_balance = 600000
 ///   total_normalized = 1_000_000 * 1.1*WAD / WAD = 1_100_000
-///   settlement = 594500 * WAD / 1_100_000 = 540_454_545_454_545_454 (floor)
+///   settlement = 600000 * WAD / 1_100_000 = 545_454_545_454_545_454 (floor)
 /// Step 4: Payout
-///   payout = 1_100_000 * 540_454_545_454_545_454 / WAD = 594_499 (floor)
+///   payout = 1_100_000 * 545_454_545_454_545_454 / WAD = 599_999 (floor)
 #[test]
 fn v6_3_lifecycle_with_default_and_fees() {
     let supply: u128 = 1_000_000;
     let sf: u128 = 1_100_000_000_000_000_000;
-    let fees: u128 = 5_500;
     let vault: u128 = 600_000;
-
-    let fees_reserved = core::cmp::min(vault, fees);
-    assert_eq!(fees_reserved, 5_500);
-
-    let available = vault - fees_reserved;
-    assert_eq!(available, 594_500);
 
     let total_normalized = supply * sf / WAD;
     assert_eq!(total_normalized, 1_100_000);
 
-    let settlement = available * WAD / total_normalized;
-    // 594500 * 1e18 / 1100000 = 540454545454545454 (floor)
-    assert_eq!(settlement, 540_454_545_454_545_454);
+    let settlement = vault * WAD / total_normalized;
+    // 600000 * 1e18 / 1100000 = 545454545454545454 (floor)
+    assert_eq!(settlement, 545_454_545_454_545_454);
 
     let payout = total_normalized * settlement / WAD;
-    // 1100000 * 540454545454545454 / 1e18 = 594499 (floor)
-    assert_eq!(payout, 594_499);
+    // 1100000 * 545454545454545454 / 1e18 = 599999 (floor)
+    assert_eq!(payout, 599_999);
 
-    // Payout + fees_reserved should be <= vault
-    assert!(payout + fees_reserved as u128 <= vault);
+    // Payout should be <= vault
+    assert!(payout <= vault);
 }
 
 // ===========================================================================
@@ -1403,10 +1371,11 @@ proptest! {
 // V9: Conservation Laws
 // ===========================================================================
 
-/// V9.1: Total payout + fees_reserved <= vault balance.
+/// V9.1: Total payout <= vault balance.
 ///
 /// For N lenders sharing a settlement, the total extracted cannot exceed the vault.
 /// This is a conservation law that must hold regardless of rounding.
+/// Fees are collected separately and do not reduce available for lenders.
 ///
 /// Test with 5 lenders of varying scaled balances.
 #[test]
@@ -1417,14 +1386,11 @@ fn v9_1_conservation_total_payouts_bounded() {
     let lender_scaled = vec![1_000_000u128, 500_000, 2_000_000, 750_000, 1_250_000];
     let total_scaled: u128 = lender_scaled.iter().sum();
 
-    let fees: u128 = 100_000;
     let vault: u128 = 5_000_000; // partially funded
 
-    // Compute settlement
+    // Compute settlement (uses full vault balance)
     let total_normalized = total_scaled * sf / WAD;
-    let fees_reserved = core::cmp::min(vault, fees);
-    let available = vault - fees_reserved;
-    let settlement = compute_settlement_factor(available, total_normalized);
+    let settlement = compute_settlement_factor(vault, total_normalized);
 
     // Compute each lender's payout
     let total_payout: u128 = lender_scaled
@@ -1435,15 +1401,14 @@ fn v9_1_conservation_total_payouts_bounded() {
         })
         .sum();
 
-    // Conservation: total_payout + fees_reserved <= vault
+    // Conservation: total_payout <= vault
     assert!(
-        total_payout + fees_reserved <= vault,
-        "Conservation violated: payout={} + fees={} > vault={}",
+        total_payout <= vault,
+        "Conservation violated: payout={} > vault={}",
         total_payout,
-        fees_reserved,
         vault
     );
-    assert!(vault - (total_payout + fees_reserved) <= lender_scaled.len() as u128);
+    assert!(vault - total_payout <= lender_scaled.len() as u128);
 }
 
 /// V9.2: Property test — conservation holds for random parameters.
@@ -1455,7 +1420,6 @@ proptest! {
         n_lenders in prop_oneof![Just(1u32), Just(2u32), Just(9u32), 1u32..10u32],
         base_deposit in prop_oneof![Just(100_000u64), Just(1_000_000u64), Just(9_999_999u64), 100_000u64..10_000_000u64],
         vault_pct in prop_oneof![Just(10u64), Just(100u64), Just(199u64), 10u64..200u64],
-        fee_pct in prop_oneof![Just(0u64), Just(1u64), Just(19u64), 0u64..20u64],
         sf_offset in prop_oneof![Just(0u64), Just(1u64), Just(499_999_999_999_999_999u64), 0u64..500_000_000_000_000_000u64],
     ) {
         let sf = WAD + u128::from(sf_offset);
@@ -1466,13 +1430,9 @@ proptest! {
 
         let total_normalized = total_scaled * sf / WAD;
         let vault = total_normalized * u128::from(vault_pct) / 100;
-        let fees = total_normalized * u128::from(fee_pct) / 100;
-
-        let fees_reserved = core::cmp::min(vault, fees);
-        let available = vault.saturating_sub(fees_reserved);
 
         if total_normalized > 0 {
-            let settlement = compute_settlement_factor(available, total_normalized);
+            let settlement = compute_settlement_factor(vault, total_normalized);
 
             let total_payout: u128 = (0..n_lenders).map(|_| {
                 let norm = per_lender_scaled * sf / WAD;
@@ -1480,9 +1440,9 @@ proptest! {
             }).sum();
 
             prop_assert!(
-                total_payout + fees_reserved <= vault + u128::from(n_lenders),
-                "Conservation violated by more than rounding: payout={}, fees_res={}, vault={}",
-                total_payout, fees_reserved, vault
+                total_payout <= vault + u128::from(n_lenders),
+                "Conservation violated by more than rounding: payout={}, vault={}",
+                total_payout, vault
             );
             prop_assert!(settlement >= 1 && settlement <= WAD);
         }

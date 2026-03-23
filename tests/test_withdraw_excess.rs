@@ -329,8 +329,12 @@ async fn test_withdraw_excess_success() {
         common::get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
 
     // Step 8: Withdraw excess
-    let withdraw_excess_ix =
-        common::build_withdraw_excess(&market, &borrower.pubkey(), &borrower_token.pubkey());
+    let withdraw_excess_ix = common::build_withdraw_excess(
+        &market,
+        &borrower.pubkey(),
+        &borrower_token.pubkey(),
+        &blacklist_program.pubkey(),
+    );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
         &[withdraw_excess_ix],
@@ -481,8 +485,12 @@ async fn test_withdraw_excess_before_maturity() {
     common::get_blockhash_pinned(&mut ctx, maturity_timestamp - 1).await;
     let snapshot_before_fail =
         common::ProtocolSnapshot::capture(&mut ctx, &market, &vault_pda, &[position_pda]).await;
-    let withdraw_excess_ix =
-        common::build_withdraw_excess(&market, &borrower.pubkey(), &borrower_token.pubkey());
+    let withdraw_excess_ix = common::build_withdraw_excess(
+        &market,
+        &borrower.pubkey(),
+        &borrower_token.pubkey(),
+        &blacklist_program.pubkey(),
+    );
     let tx = Transaction::new_signed_with_payer(
         &[withdraw_excess_ix],
         Some(&ctx.payer.pubkey()),
@@ -523,8 +531,12 @@ async fn test_withdraw_excess_before_maturity() {
         common::ProtocolSnapshot::capture(&mut ctx, &market, &vault_pda, &[position_pda]).await;
     let borrower_balance_before_late =
         common::get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
-    let withdraw_excess_ix =
-        common::build_withdraw_excess(&market, &borrower.pubkey(), &borrower_token.pubkey());
+    let withdraw_excess_ix = common::build_withdraw_excess(
+        &market,
+        &borrower.pubkey(),
+        &borrower_token.pubkey(),
+        &blacklist_program.pubkey(),
+    );
     let budget_ix =
         solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(250_000);
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
@@ -681,8 +693,12 @@ async fn test_withdraw_excess_lenders_pending() {
     // Try withdraw_excess.
     let snapshot_before_fail =
         common::ProtocolSnapshot::capture(&mut ctx, &market, &vault_pda, &[position_pda]).await;
-    let withdraw_excess_ix =
-        common::build_withdraw_excess(&market, &borrower.pubkey(), &borrower_token.pubkey());
+    let withdraw_excess_ix = common::build_withdraw_excess(
+        &market,
+        &borrower.pubkey(),
+        &borrower_token.pubkey(),
+        &blacklist_program.pubkey(),
+    );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
         &[withdraw_excess_ix],
@@ -735,8 +751,12 @@ async fn test_withdraw_excess_lenders_pending() {
         common::ProtocolSnapshot::capture(&mut ctx, &market, &vault_pda, &[position_pda]).await;
     let borrower_balance_before_retry =
         common::get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
-    let withdraw_excess_ix =
-        common::build_withdraw_excess(&market, &borrower.pubkey(), &borrower_token.pubkey());
+    let withdraw_excess_ix = common::build_withdraw_excess(
+        &market,
+        &borrower.pubkey(),
+        &borrower_token.pubkey(),
+        &blacklist_program.pubkey(),
+    );
     let budget_ix =
         solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(250_000);
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
@@ -849,8 +869,12 @@ async fn test_withdraw_excess_settlement_not_complete() {
     common::get_blockhash_pinned(&mut ctx, maturity_timestamp - 1).await;
     let snapshot_before_early_fail =
         common::ProtocolSnapshot::capture(&mut ctx, &market, &vault_pda, &no_positions).await;
-    let withdraw_excess_ix =
-        common::build_withdraw_excess(&market, &borrower.pubkey(), &borrower_token.pubkey());
+    let withdraw_excess_ix = common::build_withdraw_excess(
+        &market,
+        &borrower.pubkey(),
+        &borrower_token.pubkey(),
+        &blacklist_program.pubkey(),
+    );
     let tx = Transaction::new_signed_with_payer(
         &[withdraw_excess_ix],
         Some(&ctx.payer.pubkey()),
@@ -880,8 +904,12 @@ async fn test_withdraw_excess_settlement_not_complete() {
     common::advance_clock_past(&mut ctx, maturity_timestamp + 301).await;
     let snapshot_before_fail =
         common::ProtocolSnapshot::capture(&mut ctx, &market, &vault_pda, &no_positions).await;
-    let withdraw_excess_ix =
-        common::build_withdraw_excess(&market, &borrower.pubkey(), &borrower_token.pubkey());
+    let withdraw_excess_ix = common::build_withdraw_excess(
+        &market,
+        &borrower.pubkey(),
+        &borrower_token.pubkey(),
+        &blacklist_program.pubkey(),
+    );
     let budget_ix =
         solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(250_000);
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
@@ -1124,8 +1152,12 @@ async fn test_withdraw_excess_fees_not_collected() {
         common::get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
     let snapshot_before_fail =
         common::ProtocolSnapshot::capture(&mut ctx, &market, &vault_pda, &[position_pda]).await;
-    let withdraw_excess_ix =
-        common::build_withdraw_excess(&market, &borrower.pubkey(), &borrower_token.pubkey());
+    let withdraw_excess_ix = common::build_withdraw_excess(
+        &market,
+        &borrower.pubkey(),
+        &borrower_token.pubkey(),
+        &blacklist_program.pubkey(),
+    );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
         &[withdraw_excess_ix],
@@ -1175,8 +1207,12 @@ async fn test_withdraw_excess_fees_not_collected() {
     );
     let borrower_balance_before_success =
         common::get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
-    let withdraw_excess_ix =
-        common::build_withdraw_excess(&market, &borrower.pubkey(), &borrower_token.pubkey());
+    let withdraw_excess_ix = common::build_withdraw_excess(
+        &market,
+        &borrower.pubkey(),
+        &borrower_token.pubkey(),
+        &blacklist_program.pubkey(),
+    );
     let budget_ix =
         solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(250_000);
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
@@ -1349,8 +1385,12 @@ async fn test_withdraw_excess_no_excess() {
         common::get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
     let snapshot_before_fail =
         common::ProtocolSnapshot::capture(&mut ctx, &market, &vault_pda, &[position_pda]).await;
-    let withdraw_excess_ix =
-        common::build_withdraw_excess(&market, &borrower.pubkey(), &borrower_token.pubkey());
+    let withdraw_excess_ix = common::build_withdraw_excess(
+        &market,
+        &borrower.pubkey(),
+        &borrower_token.pubkey(),
+        &blacklist_program.pubkey(),
+    );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
         &[withdraw_excess_ix],
@@ -1411,8 +1451,12 @@ async fn test_withdraw_excess_no_excess() {
     );
     let borrower_balance_before_success =
         common::get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
-    let withdraw_excess_ix =
-        common::build_withdraw_excess(&market, &borrower.pubkey(), &borrower_token.pubkey());
+    let withdraw_excess_ix = common::build_withdraw_excess(
+        &market,
+        &borrower.pubkey(),
+        &borrower_token.pubkey(),
+        &blacklist_program.pubkey(),
+    );
     let budget_ix =
         solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(250_000);
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
@@ -1668,6 +1712,10 @@ async fn test_withdraw_excess_wrong_borrower() {
     let snapshot_before_fail =
         common::ProtocolSnapshot::capture(&mut ctx, &market, &vault, &[position_pda]).await;
     let (protocol_config, _) = common::get_protocol_config_pda();
+    let (blacklist_check, _) =
+        common::get_blacklist_pda(&blacklist_program.pubkey(), &wrong_borrower.pubkey());
+    let (wrong_borrower_whitelist, _) =
+        common::get_borrower_whitelist_pda(&wrong_borrower.pubkey());
     let ix = Instruction {
         program_id: common::program_id(),
         accounts: vec![
@@ -1678,6 +1726,8 @@ async fn test_withdraw_excess_wrong_borrower() {
             AccountMeta::new_readonly(market_authority, false),
             AccountMeta::new_readonly(spl_token::id(), false),
             AccountMeta::new_readonly(protocol_config, false),
+            AccountMeta::new_readonly(blacklist_check, false),
+            AccountMeta::new_readonly(wrong_borrower_whitelist, false),
         ],
         data: vec![11u8], // WithdrawExcess discriminator
     };
@@ -1722,8 +1772,12 @@ async fn test_withdraw_excess_wrong_borrower() {
     );
     let borrower_balance_before_success =
         common::get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
-    let withdraw_excess_ix =
-        common::build_withdraw_excess(&market, &borrower.pubkey(), &borrower_token.pubkey());
+    let withdraw_excess_ix = common::build_withdraw_excess(
+        &market,
+        &borrower.pubkey(),
+        &borrower_token.pubkey(),
+        &blacklist_program.pubkey(),
+    );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
         &[withdraw_excess_ix],

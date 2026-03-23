@@ -908,8 +908,9 @@ async fn test_multiple_markets_global_capacity() {
 // 4. Fee reservation reduces borrowable amount
 // ---------------------------------------------------------------------------
 
-/// With a 10% fee rate, deposit 1000, advance time to accrue interest/fees,
-/// then verify borrowable amount is reduced by the reserved fees.
+/// COAL-L02: With accrued fees, borrower can still borrow the full vault balance.
+/// Fees are virtual pre-maturity — collect_fees blocks extraction while lenders have deposits.
+/// Boundary test: vault_balance succeeds, vault_balance + 1 fails.
 #[tokio::test]
 async fn test_fee_reservation_reduces_borrowable() {
     let mut ctx = common::start_context().await;
@@ -992,8 +993,7 @@ async fn test_fee_reservation_reduces_borrowable() {
     let six_months_later = common::PINNED_EPOCH + 180 * 24 * 3600;
     advance_clock_past(&mut ctx, six_months_later).await;
 
-    // Seed borrow accrues interest/fees at this timestamp and locks the threshold for
-    // subsequent same-slot boundary checks.
+    // Seed borrow to trigger accrual
     let seed_borrow: u64 = 1;
     let ix = build_borrow(
         &market,
@@ -1011,30 +1011,15 @@ async fn test_fee_reservation_reduces_borrowable() {
     );
     ctx.banks_client.process_transaction(tx).await.unwrap();
 
+    // COAL-L02: borrowable is the full vault balance (fees are virtual pre-maturity)
     let market_after_seed = parse_market(&get_account_data(&mut ctx, &market).await);
     let vault_after_seed = get_token_balance(&mut ctx, &vault).await;
-    let fees_reserved = core::cmp::min(vault_after_seed, market_after_seed.accrued_protocol_fees);
-    let borrowable = vault_after_seed
-        .checked_sub(fees_reserved)
-        .expect("fees reserved must be <= vault balance");
     assert!(
-        fees_reserved > 0,
-        "fees should be reserved after time accrual"
-    );
-    assert!(
-        borrowable < vault_after_seed,
-        "reserved fees should reduce borrowable amount"
-    );
-    assert!(
-        borrowable >= 2,
-        "borrowable must support x-1/x boundary checks"
+        market_after_seed.accrued_protocol_fees > 0,
+        "fees should be accrued after time advancement"
     );
 
-    // x+1 boundary: borrow one over borrowable must fail atomically.
-    let borrower_before_fail = get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
-    let wl_before_fail = get_account_data(&mut ctx, &wl_pda).await;
-    let market_before_fail = get_account_data(&mut ctx, &market).await;
-    let vault_before_fail = get_token_balance(&mut ctx, &vault).await;
+    // x+1 boundary: borrow one over vault balance must fail atomically.
     let snapshot_before_fail =
         ProtocolSnapshot::capture(&mut ctx, &market, &vault, &[lender_pos]).await;
     let borrow_ix = build_borrow(
@@ -1042,7 +1027,7 @@ async fn test_fee_reservation_reduces_borrowable() {
         &borrower.pubkey(),
         &borrower_token.pubkey(),
         &blacklist_program.pubkey(),
-        borrowable + 1,
+        vault_after_seed + 1,
     );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
@@ -1060,42 +1045,15 @@ async fn test_fee_reservation_reduces_borrowable() {
     let snapshot_after_fail =
         ProtocolSnapshot::capture(&mut ctx, &market, &vault, &[lender_pos]).await;
     snapshot_before_fail.assert_unchanged(&snapshot_after_fail);
-    assert_eq!(
-        get_token_balance(&mut ctx, &borrower_token.pubkey()).await,
-        borrower_before_fail
-    );
-    assert_eq!(get_account_data(&mut ctx, &wl_pda).await, wl_before_fail);
-    assert_eq!(
-        get_account_data(&mut ctx, &market).await,
-        market_before_fail
-    );
-    assert_eq!(get_token_balance(&mut ctx, &vault).await, vault_before_fail);
 
-    // x-1 boundary.
+    // x boundary: borrow entire vault balance succeeds (fees are virtual).
     let borrower_before_success = get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
     let ix = build_borrow(
         &market,
         &borrower.pubkey(),
         &borrower_token.pubkey(),
         &blacklist_program.pubkey(),
-        borrowable - 1,
-    );
-    let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
-    let tx = Transaction::new_signed_with_payer(
-        &[ix],
-        Some(&ctx.payer.pubkey()),
-        &[&ctx.payer, &borrower],
-        recent,
-    );
-    ctx.banks_client.process_transaction(tx).await.unwrap();
-
-    // x boundary (remaining 1 unit).
-    let ix = build_borrow(
-        &market,
-        &borrower.pubkey(),
-        &borrower_token.pubkey(),
-        &blacklist_program.pubkey(),
-        1,
+        vault_after_seed,
     );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
@@ -1108,14 +1066,10 @@ async fn test_fee_reservation_reduces_borrowable() {
         recent,
     );
     ctx.banks_client.process_transaction(tx).await.unwrap();
-    let borrower_after_exact = get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
-    assert_eq!(borrower_after_exact - borrower_before_success, borrowable);
+    let borrower_after = get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
+    assert_eq!(borrower_after - borrower_before_success, vault_after_seed);
 
-    let wl_after_exact = parse_borrower_whitelist(&get_account_data(&mut ctx, &wl_pda).await);
-    assert_eq!(wl_after_exact.current_borrowed, seed_borrow + borrowable);
-    assert_eq!(get_token_balance(&mut ctx, &vault).await, fees_reserved);
-
-    // One more unit should fail and preserve state.
+    // Vault is now empty — one more unit should fail.
     let wl_before_second_fail = get_account_data(&mut ctx, &wl_pda).await;
     let snapshot_before_second_fail =
         ProtocolSnapshot::capture(&mut ctx, &market, &vault, &[lender_pos]).await;
@@ -1406,10 +1360,9 @@ async fn test_create_market_interest_rate_exceeds_max() {
 // ---------------------------------------------------------------------------
 
 /// Whitelist a borrower, create a market, then de-whitelist the borrower
-/// (is_whitelisted=0). Borrowing should still succeed because the borrow
-/// processor does not re-check whitelist status — only market.borrower match.
+/// (is_whitelisted=0). Borrowing should fail with NotWhitelisted (COAL-I02).
 #[tokio::test]
-async fn test_borrow_succeeds_after_dewhitelist() {
+async fn test_borrow_fails_after_dewhitelist() {
     let mut ctx = common::start_context().await;
 
     let admin = Keypair::new();
@@ -1504,63 +1457,17 @@ async fn test_borrow_succeeds_after_dewhitelist() {
     assert_eq!(wl.max_borrow_capacity, 100 * USDC);
     assert_eq!(wl.current_borrowed, 0);
 
-    // Borrow should still succeed after de-whitelist (borrower match still valid).
-    // x-1 boundary for 100 USDC capacity.
+    // COAL-I02: Borrow should fail after de-whitelist with NotWhitelisted.
+    let wl_before = get_account_data(&mut ctx, &wl_pda).await;
+    let borrower_before = get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
+    let snapshot_before = ProtocolSnapshot::capture(&mut ctx, &market, &vault, &[lender_pos]).await;
+
     let borrow_ix = build_borrow(
         &market,
         &borrower.pubkey(),
         &borrower_token.pubkey(),
         &blacklist_program.pubkey(),
-        99 * USDC,
-    );
-    let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
-    let tx = Transaction::new_signed_with_payer(
-        &[borrow_ix],
-        Some(&ctx.payer.pubkey()),
-        &[&ctx.payer, &borrower],
-        recent,
-    );
-    ctx.banks_client.process_transaction(tx).await.unwrap();
-
-    // x boundary.
-    let borrow_ix = build_borrow(
-        &market,
-        &borrower.pubkey(),
-        &borrower_token.pubkey(),
-        &blacklist_program.pubkey(),
-        1 * USDC,
-    );
-    let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
-    let tx = Transaction::new_signed_with_payer(
-        &[borrow_ix],
-        Some(&ctx.payer.pubkey()),
-        &[&ctx.payer, &borrower],
-        recent,
-    );
-    ctx.banks_client
-        .process_transaction(tx)
-        .await
-        .expect("borrow should succeed even after de-whitelisting");
-
-    let wl_data = get_account_data(&mut ctx, &wl_pda).await;
-    let wl = parse_borrower_whitelist(&wl_data);
-    assert_eq!(wl.current_borrowed, 100 * USDC);
-    assert_eq!(
-        get_token_balance(&mut ctx, &borrower_token.pubkey()).await,
-        100 * USDC
-    );
-
-    // x+1 boundary should fail with global capacity even while de-whitelisted.
-    let wl_before_fail = get_account_data(&mut ctx, &wl_pda).await;
-    let borrower_before_fail = get_token_balance(&mut ctx, &borrower_token.pubkey()).await;
-    let snapshot_before_fail =
-        ProtocolSnapshot::capture(&mut ctx, &market, &vault, &[lender_pos]).await;
-    let borrow_ix = build_borrow(
-        &market,
-        &borrower.pubkey(),
-        &borrower_token.pubkey(),
-        &blacklist_program.pubkey(),
-        1,
+        50 * USDC,
     );
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
@@ -1574,14 +1481,15 @@ async fn test_borrow_succeeds_after_dewhitelist() {
         .process_transaction(tx)
         .await
         .map_err(|e| e.unwrap());
-    assert_custom_error(&result, 27); // GlobalCapacityExceeded
-    let snapshot_after_fail =
-        ProtocolSnapshot::capture(&mut ctx, &market, &vault, &[lender_pos]).await;
-    snapshot_before_fail.assert_unchanged(&snapshot_after_fail);
-    assert_eq!(get_account_data(&mut ctx, &wl_pda).await, wl_before_fail);
+    assert_custom_error(&result, 6); // NotWhitelisted
+
+    // Verify no state changes
+    let snapshot_after = ProtocolSnapshot::capture(&mut ctx, &market, &vault, &[lender_pos]).await;
+    snapshot_before.assert_unchanged(&snapshot_after);
+    assert_eq!(get_account_data(&mut ctx, &wl_pda).await, wl_before);
     assert_eq!(
         get_token_balance(&mut ctx, &borrower_token.pubkey()).await,
-        borrower_before_fail
+        borrower_before
     );
 }
 

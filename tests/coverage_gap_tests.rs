@@ -115,14 +115,14 @@ fn scale_factor_after_exact(scale_factor: u128, annual_bps: u16, elapsed_seconds
 
 fn expected_fee_delta(
     scaled_total_supply: u128,
-    new_scale_factor: u128,
+    scale_factor_before: u128,
     annual_bps: u16,
     fee_rate_bps: u16,
     elapsed_seconds: i64,
 ) -> u64 {
     interest_oracle::fee_delta_exact(
         scaled_total_supply,
-        new_scale_factor,
+        scale_factor_before,
         annual_bps,
         fee_rate_bps,
         elapsed_seconds,
@@ -532,7 +532,7 @@ fn edge_existing_fees_accumulation() {
     accrue_interest(&mut market, &config, elapsed).unwrap();
 
     let expected_sf = scale_factor_after_exact(WAD, 1000, elapsed);
-    let expected_new_fees = expected_fee_delta(supply, expected_sf, 1000, 1000, elapsed);
+    let expected_new_fees = expected_fee_delta(supply, WAD, 1000, 1000, elapsed);
     let expected_total = initial_fees + expected_new_fees;
 
     assert_eq!(market.scale_factor(), expected_sf);

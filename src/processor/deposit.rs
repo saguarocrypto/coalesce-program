@@ -12,7 +12,7 @@ use crate::logic::validation::{
 };
 use crate::state::{LenderPosition, Market, ProtocolConfig};
 
-/// Deposit (disc 5)
+/// Deposit (disc 3)
 /// Lender deposits USDC into a market vault, receiving scaled balance.
 pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> ProgramResult {
     if accounts.len() < 10 {
@@ -38,9 +38,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     if data.len() < 8 {
         return Err(ProgramError::InvalidInstructionData);
     }
-    let amount = u64::from_le_bytes([
-        data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
-    ]);
+    let amount = u64::from_le_bytes(
+        data[0..8]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidInstructionData)?,
+    );
 
     // SR-029: amount > 0
     if amount == 0 {
@@ -90,7 +92,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(ProgramError::InvalidAccountData);
     }
 
-    // SR-121: Verify market PDA derivation
+    // Verify market PDA derivation
     validate_market_pda(market_account, market, program_id)?;
 
     // SR-035: vault must match
@@ -118,7 +120,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     // Step 2: Compute scaled amount = amount * WAD / scale_factor
     let amount_u128 = u128::from(amount);
     let scale_factor = market.scale_factor();
-    // SR-122: Explicit check for zero scale_factor (defense-in-depth)
+    // Defense-in-depth: reject zero scale_factor before division
     if scale_factor == 0 {
         return Err(LendingError::InvalidScaleFactor.into());
     }
@@ -128,25 +130,27 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         .checked_div(scale_factor)
         .ok_or(LendingError::MathOverflow)?;
 
-    // Step 4: Revert if scaled_amount == 0
+    // Step 3: Revert if scaled_amount == 0
     if scaled_amount == 0 {
         return Err(LendingError::ZeroScaledAmount.into());
     }
 
-    // Step 3: Validate cap
+    // Step 3: Validate cap on raw principal (not interest-inflated value).
+    // Finding 4: Using scaled_total_supply * scale_factor included accrued
+    // interest, which meant the effective deposit cap shrank over time.
+    let new_total_deposited = market
+        .total_deposited()
+        .checked_add(amount)
+        .ok_or(LendingError::MathOverflow)?;
+    let max_supply = market.max_total_supply();
+    if new_total_deposited > max_supply {
+        return Err(LendingError::CapExceeded.into());
+    }
+
     let new_scaled_total = market
         .scaled_total_supply()
         .checked_add(scaled_amount)
         .ok_or(LendingError::MathOverflow)?;
-    let new_normalized = new_scaled_total
-        .checked_mul(scale_factor)
-        .ok_or(LendingError::MathOverflow)?
-        .checked_div(WAD)
-        .ok_or(LendingError::MathOverflow)?;
-    let max_supply_u128 = u128::from(market.max_total_supply());
-    if new_normalized > max_supply_u128 {
-        return Err(LendingError::CapExceeded.into());
-    }
 
     // H-03: Verify token account ownership before transfer
     // SAFETY: Token account data is validated by the SPL Token program which owns it.
@@ -157,16 +161,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(LendingError::InvalidTokenAccountOwner.into());
     }
 
-    // Step 5: Transfer tokens (lender -> vault)
-    pinocchio_token::instructions::Transfer {
-        from: lender_token_account,
-        to: vault_account,
-        authority: lender,
-        amount,
-    }
-    .invoke()?;
-
-    // Create or update lender position
+    // Validate and create/update lender position BEFORE transfer (CEI).
     let (expected_pos_pda, pos_bump) = Address::find_program_address(
         &[
             SEED_LENDER,
@@ -179,12 +174,10 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(LendingError::InvalidPDA.into());
     }
 
-    let position_exists = lender_position_account.lamports() > 0;
+    // Use ownership check instead of lamports to determine if position exists.
+    // Lamports can be donated to any PDA, so lamports > 0 is not proof of initialization.
+    let position_exists = lender_position_account.owned_by(program_id);
     if position_exists {
-        // Verify ownership before deserializing existing position
-        if !lender_position_account.owned_by(program_id) {
-            return Err(LendingError::InvalidAccountOwner.into());
-        }
         // Update existing position
         // SAFETY: This is the only mutable borrow of this account in this instruction.
         // Account data length is verified by bytemuck::try_from_bytes_mut.
@@ -211,7 +204,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
             .ok_or(LendingError::MathOverflow)?;
         position.set_scaled_balance(new_balance);
     } else {
-        // Create the lender position account
+        // Create the lender position account (system program CPI — not a token transfer)
         let pos_bump_ref = [pos_bump];
         let pos_signer_seeds = [
             pinocchio::cpi::Seed::from(SEED_LENDER),
@@ -246,13 +239,18 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         position.bump = pos_bump;
     }
 
-    // Step 7: Update market
+    // CEI: Update market state BEFORE transfer CPI (Finding 3).
     market.set_scaled_total_supply(new_scaled_total);
-    let new_total_deposited = market
-        .total_deposited()
-        .checked_add(amount)
-        .ok_or(LendingError::MathOverflow)?;
     market.set_total_deposited(new_total_deposited);
+
+    // Transfer tokens (lender -> vault)
+    pinocchio_token::instructions::Transfer {
+        from: lender_token_account,
+        to: vault_account,
+        authority: lender,
+        amount,
+    }
+    .invoke()?;
 
     log!(
         "evt:deposit market={} lender={} amount={} scaled={}",

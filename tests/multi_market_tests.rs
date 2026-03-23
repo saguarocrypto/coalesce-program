@@ -158,14 +158,12 @@ fn sim_borrow(
     vault_balance: &mut u64,
     amount: u64,
 ) {
-    // Fee reservation check
-    let fees_reserved = core::cmp::min(*vault_balance, market.accrued_protocol_fees());
-    let borrowable = vault_balance.checked_sub(fees_reserved).unwrap();
+    // COAL-L02: no fee reservation, full vault is borrowable
     assert!(
-        amount <= borrowable,
+        amount <= *vault_balance,
         "borrow amount {} exceeds borrowable {}",
         amount,
-        borrowable
+        *vault_balance
     );
 
     // Global capacity check
@@ -205,14 +203,8 @@ fn sim_repay(market: &mut Market, vault_balance: &mut u64, amount: u64) {
 
 /// Compute the settlement factor given current vault state.
 fn compute_settlement_factor(market: &Market, vault_balance: u64) -> u128 {
-    let vault_u128 = u128::from(vault_balance);
-    let fees_u128 = u128::from(market.accrued_protocol_fees());
-    let fees_reserved = if vault_u128 < fees_u128 {
-        vault_u128
-    } else {
-        fees_u128
-    };
-    let available_for_lenders = vault_u128.checked_sub(fees_reserved).unwrap();
+    // COAL-C01: no fee reservation, full vault is available for lenders
+    let available_for_lenders = u128::from(vault_balance);
 
     let total_normalized = market
         .scaled_total_supply()
@@ -290,15 +282,15 @@ fn fee_delta_after_elapsed(
     }
 
     let growth = math_oracle::growth_factor_wad(annual_bps, elapsed_seconds);
-    let new_sf = math_oracle::mul_wad(scale_factor_before, growth);
     let interest_delta_wad = growth.checked_sub(WAD).unwrap();
     let fee_delta_wad = interest_delta_wad
         .checked_mul(u128::from(fee_rate_bps))
         .unwrap()
         .checked_div(BPS)
         .unwrap();
+    // Use pre-accrual scale_factor_before (matches on-chain Finding 10 fix)
     let fee_normalized = scaled_supply
-        .checked_mul(new_sf)
+        .checked_mul(scale_factor_before)
         .unwrap()
         .checked_div(WAD)
         .unwrap()

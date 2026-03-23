@@ -136,10 +136,10 @@ fn expected_fee_delta(
         return 0;
     }
 
-    let new_sf = expected_scale_factor(initial_sf, annual_bps, elapsed_seconds);
     let interest_delta_wad = growth_factor_wad(annual_bps, elapsed_seconds) - WAD;
     let fee_delta_wad = interest_delta_wad * u128::from(fee_rate_bps) / BPS;
-    let fee = scaled_supply * new_sf / WAD * fee_delta_wad / WAD;
+    // Use pre-accrual initial_sf (matches on-chain Finding 10 fix)
+    let fee = scaled_supply * initial_sf / WAD * fee_delta_wad / WAD;
     u64::try_from(fee).expect("fee must fit u64")
 }
 
@@ -797,11 +797,10 @@ proptest! {
         let bps_big = BigUint::from(10_000u64);
 
         let growth_big = bigint_growth_factor(annual_bps, SECONDS_PER_YEAR as u128);
-        // new_sf = WAD * growth / WAD = growth (initial_sf = WAD)
         let interest_delta_big = &growth_big - &wad_big;
         let fee_delta_wad_big = &interest_delta_big * BigUint::from(fee_rate_bps as u64) / &bps_big;
-        let supply_normalized_big = BigUint::from(supply) * &growth_big / &wad_big;
-        let expected_fee_big = &supply_normalized_big * &fee_delta_wad_big / &wad_big;
+        // Use pre-accrual scale factor WAD: supply * WAD / WAD = supply (Finding 10 fix)
+        let expected_fee_big = BigUint::from(supply) * &fee_delta_wad_big / &wad_big;
 
         let on_chain_fee = BigUint::from(market.accrued_protocol_fees());
         let diff = if on_chain_fee >= expected_fee_big {

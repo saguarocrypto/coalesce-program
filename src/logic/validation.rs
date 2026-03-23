@@ -115,31 +115,29 @@ pub fn check_blacklist(
         return Err(LendingError::InvalidPDA.into());
     }
 
-    // Step 4: Non-existent account (0 lamports)
-    // Behavior depends on blacklist_mode:
-    //   - fail-open (default): non-existent = not blacklisted
-    //   - fail-closed: non-existent = blacklisted
-    if blacklist_check.lamports() == 0 {
+    // Step 4: Check if account belongs to the blacklist program.
+    // An account not owned by the blacklist program is treated as non-existent,
+    // regardless of lamport balance (lamports can be donated to any PDA).
+    // SAFETY: Read-only access to account owner field.
+    let owned_by_blacklist = unsafe { blacklist_check.owner() } == blacklist_program;
+    if !owned_by_blacklist {
+        // Behavior depends on blacklist_mode:
+        //   - fail-open (default): non-existent = not blacklisted
+        //   - fail-closed: non-existent = blacklisted
         if protocol_config.is_blacklist_fail_closed() {
             return Err(LendingError::Blacklisted.into());
         }
         return Ok(());
     }
 
-    // Step 5: Owner must be the blacklist program
-    // SAFETY: Read-only access to account owner field.
-    if unsafe { blacklist_check.owner() } != blacklist_program {
-        return Err(LendingError::InvalidAccountOwner.into());
-    }
-
-    // Step 6: Data must have >= 1 byte
+    // Step 5: Data must have >= 1 byte
     // SAFETY: Read-only borrow. Data length is checked immediately after.
     let data = unsafe { blacklist_check.borrow_unchecked() };
     if data.is_empty() {
         return Err(LendingError::InvalidAccountOwner.into());
     }
 
-    // Step 7: Status byte check
+    // Step 6: Status byte check
     match data[0] {
         1 => Err(LendingError::Blacklisted.into()),
         0 => Ok(()),

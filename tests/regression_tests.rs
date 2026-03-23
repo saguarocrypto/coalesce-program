@@ -88,7 +88,7 @@ fn expected_scale_factor(
 
 fn expected_fee_delta(
     scaled_total_supply: u128,
-    new_scale_factor: u128,
+    scale_factor_before: u128,
     annual_interest_bps: u16,
     fee_rate_bps: u16,
     elapsed_seconds: i64,
@@ -101,7 +101,8 @@ fn expected_fee_delta(
         .checked_sub(WAD)
         .unwrap();
     let fee_delta_wad = interest_delta_wad * u128::from(fee_rate_bps) / BPS;
-    let fee_normalized = scaled_total_supply * new_scale_factor / WAD * fee_delta_wad / WAD;
+    // Use pre-accrual scale_factor_before (matches on-chain Finding 10 fix)
+    let fee_normalized = scaled_total_supply * scale_factor_before / WAD * fee_delta_wad / WAD;
     u64::try_from(fee_normalized).unwrap()
 }
 
@@ -406,13 +407,8 @@ fn execute_transaction(state: &mut SimulationState, tx: &Transaction, ctx: &str)
             )
             .unwrap_or_else(|e| panic!("{ctx}: accrue_interest failed: {e:?}"));
 
-            // Step 2: Fee reservation
-            let fees_reserved =
-                core::cmp::min(state.vault_balance, state.market.accrued_protocol_fees());
-            let borrowable = state
-                .vault_balance
-                .checked_sub(fees_reserved)
-                .expect("borrowable underflow");
+            // Step 2: Borrowable check (COAL-L02: no fee reservation, full vault is borrowable)
+            let borrowable = state.vault_balance;
             assert!(
                 *amount <= borrowable,
                 "{ctx}: borrow amount {amount} > borrowable {borrowable}"
@@ -485,12 +481,8 @@ fn execute_transaction(state: &mut SimulationState, tx: &Transaction, ctx: &str)
 
             // Step 2: Compute settlement factor if not yet settled
             if state.market.settlement_factor_wad() == 0 {
-                let vault_balance_u128 = u128::from(state.vault_balance);
-                let fees_u128 = u128::from(state.market.accrued_protocol_fees());
-                let fees_reserved = core::cmp::min(vault_balance_u128, fees_u128);
-                let available_for_lenders = vault_balance_u128
-                    .checked_sub(fees_reserved)
-                    .expect("available underflow");
+                // COAL-C01: no fee reservation, full vault is available for lenders
+                let available_for_lenders = u128::from(state.vault_balance);
 
                 let total_normalized = state
                     .market
@@ -614,13 +606,8 @@ fn execute_transaction(state: &mut SimulationState, tx: &Transaction, ctx: &str)
             accrue_interest(&mut state.market, &zero_config, *current_timestamp)
                 .unwrap_or_else(|e| panic!("{ctx}: accrue_interest failed: {e:?}"));
 
-            // Recompute settlement factor
-            let vault_balance_u128 = u128::from(state.vault_balance);
-            let fees_u128 = u128::from(state.market.accrued_protocol_fees());
-            let fees_reserved = core::cmp::min(vault_balance_u128, fees_u128);
-            let available = vault_balance_u128
-                .checked_sub(fees_reserved)
-                .expect("available underflow");
+            // Recompute settlement factor (COAL-C01: no fee reservation, full vault available)
+            let available = u128::from(state.vault_balance);
 
             let total_normalized = state
                 .market
@@ -1071,7 +1058,7 @@ fn regression_fee_collection() {
 
     let scaled_supply: u128 = u128::from(deposit_amount);
     let expected_sf = expected_scale_factor(WAD, 1000, year);
-    let expected_fees = expected_fee_delta(scaled_supply, expected_sf, 1000, 500, year);
+    let expected_fees = expected_fee_delta(scaled_supply, WAD, 1000, 500, year);
 
     let scenario = RegressionScenario {
         name: "fee_collection",

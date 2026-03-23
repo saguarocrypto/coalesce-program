@@ -192,10 +192,8 @@ fn normalized_total_supply(market: &Market) -> u128 {
 
 fn compute_settlement_factor(market: &Market, vault_balance: u64) -> u128 {
     let total_norm = normalized_total_supply(market);
-    let vault_u128 = u128::from(vault_balance);
-    let fees_u128 = u128::from(market.accrued_protocol_fees());
-    let fees_reserved = vault_u128.min(fees_u128);
-    let available = vault_u128.saturating_sub(fees_reserved);
+    // After COAL-C01: no fee reservation; available = vault_balance directly
+    let available = u128::from(vault_balance);
 
     if total_norm == 0 {
         WAD
@@ -419,10 +417,7 @@ fn apply_borrow(state: &mut ValidState, amount: u64) -> bool {
         return false;
     }
 
-    let fees_reserved = state
-        .vault_balance
-        .min(state.market.accrued_protocol_fees());
-    let borrowable = state.vault_balance.saturating_sub(fees_reserved);
+    let borrowable = state.vault_balance;
     if amount > borrowable {
         return false;
     }
@@ -645,8 +640,7 @@ proptest! {
             }
 
             // Borrow fraction of vault
-            let fees_reserved = state.vault_balance.min(state.market.accrued_protocol_fees());
-            let borrowable = state.vault_balance.saturating_sub(fees_reserved);
+            let borrowable = state.vault_balance;
             let borrow_amount = (u128::from(borrowable) * u128::from(borrow_fracs[step]) / 10_000) as u64;
             if borrow_amount > 0 {
                 let bor_ok = apply_borrow(&mut state, borrow_amount);
@@ -685,8 +679,7 @@ proptest! {
         check_all_invariants(&state, "lifecycle accrue1");
 
         // Phase 3: Borrow
-        let fees_reserved = state.vault_balance.min(state.market.accrued_protocol_fees());
-        let borrowable = state.vault_balance.saturating_sub(fees_reserved);
+        let borrowable = state.vault_balance;
         let borrow_amount = (u128::from(borrowable) * u128::from(borrow_frac) / 10_000) as u64;
         if borrow_amount > 0 {
             let _ = apply_borrow(&mut state, borrow_amount);
@@ -845,8 +838,7 @@ proptest! {
         state.prev_fees = state.prev_fees.min(state.market.accrued_protocol_fees());
 
         state.current_time = 1000;
-        let fees_reserved = state.vault_balance.min(state.market.accrued_protocol_fees());
-        let borrowable = state.vault_balance.saturating_sub(fees_reserved);
+        let borrowable = state.vault_balance;
         let borrow_amount = (u128::from(borrowable) * u128::from(borrow_frac) / 10_000) as u64;
         if borrow_amount > 0 {
             let _ = apply_borrow(&mut state, borrow_amount);
@@ -972,8 +964,7 @@ proptest! {
 
         // Borrow is reachable with funds in vault
         state.current_time = 200;
-        let fees_reserved = state.vault_balance.min(state.market.accrued_protocol_fees());
-        let borrowable = state.vault_balance.saturating_sub(fees_reserved);
+        let borrowable = state.vault_balance;
         if borrowable > 0 {
             let borrow_ok = apply_borrow(&mut state, borrowable.min(deposit_amount / 2));
             prop_assert!(borrow_ok, "Borrow must be reachable with funds");
@@ -1074,8 +1065,7 @@ proptest! {
             }
         }
         // Try borrow
-        let fees_reserved = state.vault_balance.min(state.market.accrued_protocol_fees());
-        let borrowable = state.vault_balance.saturating_sub(fees_reserved);
+        let borrowable = state.vault_balance;
         if borrowable > 0 {
             any_possible = true;
         }
@@ -1131,12 +1121,11 @@ proptest! {
         prop_assert!(dep_ok, "deposit must succeed");
         state.prev_fees = state.prev_fees.min(state.market.accrued_protocol_fees());
 
-        let fees_reserved = state.vault_balance.min(state.market.accrued_protocol_fees());
-        let borrowable = state.vault_balance.saturating_sub(fees_reserved);
+        let borrowable = state.vault_balance;
         prop_assert!(
             borrowable > 0,
-            "after deposit, borrowable should be > 0 (vault={}, fees={})",
-            state.vault_balance, state.market.accrued_protocol_fees()
+            "after deposit, borrowable should be > 0 (vault={})",
+            state.vault_balance
         );
 
         let bor_ok = apply_borrow(&mut state, 1);
@@ -1224,8 +1213,7 @@ proptest! {
         let _ = apply_deposit(&mut state, 1, deposit_amount / 2);
         state.prev_fees = state.prev_fees.min(state.market.accrued_protocol_fees());
 
-        let fees_reserved = state.vault_balance.min(state.market.accrued_protocol_fees());
-        let borrowable = state.vault_balance.saturating_sub(fees_reserved);
+        let borrowable = state.vault_balance;
         let borrow_amount = (u128::from(borrowable) * u128::from(borrow_frac) / 10_000) as u64;
         if borrow_amount > 0 {
             let _ = apply_borrow(&mut state, borrow_amount);
@@ -1751,10 +1739,7 @@ fn test_regression_full_lifecycle_known_values() {
     check_all_invariants(&state, "regression_lifecycle accrue");
 
     // Borrow half
-    let fees_reserved = state
-        .vault_balance
-        .min(state.market.accrued_protocol_fees());
-    let borrowable = state.vault_balance.saturating_sub(fees_reserved);
+    let borrowable = state.vault_balance;
     let borrow_amount = borrowable / 2;
     if borrow_amount > 0 {
         let bor_ok = apply_borrow(&mut state, borrow_amount);

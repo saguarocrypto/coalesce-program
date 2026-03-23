@@ -22,7 +22,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     if data.len() < 2 {
         return Err(ProgramError::InvalidInstructionData);
     }
-    let new_fee_rate_bps = u16::from_le_bytes([data[0], data[1]]);
+    let new_fee_rate_bps = u16::from_le_bytes(
+        data[0..2]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidInstructionData)?,
+    );
 
     // Verify PDA
     let (expected_pda, _bump) = Address::find_program_address(&[SEED_PROTOCOL_CONFIG], program_id);
@@ -36,33 +40,35 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     }
 
     // Read current config to validate admin
-    // SAFETY: Read-only borrow. Account data length is verified by bytemuck::try_from_bytes.
-    let config_data = unsafe { protocol_config_account.borrow_unchecked() };
-    let config_ref: &ProtocolConfig =
-        bytemuck::try_from_bytes(config_data).map_err(|_| ProgramError::InvalidAccountData)?;
+    {
+        // SAFETY: Read-only borrow. Account data length is verified by bytemuck::try_from_bytes.
+        let config_data = unsafe { protocol_config_account.borrow_unchecked() };
+        let config_ref: &ProtocolConfig =
+            bytemuck::try_from_bytes(config_data).map_err(|_| ProgramError::InvalidAccountData)?;
 
-    // Discriminator check for ProtocolConfig
-    if config_ref.discriminator != DISC_PROTOCOL_CONFIG {
-        return Err(ProgramError::InvalidAccountData);
-    }
+        // Discriminator check for ProtocolConfig
+        if config_ref.discriminator != DISC_PROTOCOL_CONFIG {
+            return Err(ProgramError::InvalidAccountData);
+        }
 
-    // SR-014: admin must match
-    if config_ref.admin != *admin.address().as_ref() {
-        return Err(LendingError::Unauthorized.into());
-    }
-    // admin must be signer
-    if !admin.is_signer() {
-        return Err(LendingError::Unauthorized.into());
-    }
+        // SR-014: admin must match
+        if config_ref.admin != *admin.address().as_ref() {
+            return Err(LendingError::Unauthorized.into());
+        }
+        // admin must be signer
+        if !admin.is_signer() {
+            return Err(LendingError::Unauthorized.into());
+        }
 
-    // SR-015: fee rate <= 10,000
-    if new_fee_rate_bps > MAX_FEE_RATE_BPS {
-        return Err(LendingError::InvalidFeeRate.into());
-    }
+        // SR-015: fee rate <= 10,000
+        if new_fee_rate_bps > MAX_FEE_RATE_BPS {
+            return Err(LendingError::InvalidFeeRate.into());
+        }
 
-    // SR-016: new_fee_authority must not be zero
-    if new_fee_authority.address().as_ref() == ZERO_ADDRESS {
-        return Err(LendingError::InvalidAddress.into());
+        // SR-016: new_fee_authority must not be zero
+        if new_fee_authority.address().as_ref() == ZERO_ADDRESS {
+            return Err(LendingError::InvalidAddress.into());
+        }
     }
 
     // Mutably update config

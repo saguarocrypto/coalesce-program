@@ -886,6 +886,10 @@ async fn test_close_position_non_signer_lender() {
         .unwrap()
         .unwrap()
         .lamports;
+    // COAL-H01: Read position data before close attempt to check haircut_owed.
+    let pos_data = common::get_account_data(&mut ctx, &lender_position).await;
+    let pos = common::parse_lender_position(&pos_data);
+
     let close_ok_ix = common::build_close_lender_position(&market, &lender.pubkey());
     let blockhash = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
@@ -894,6 +898,18 @@ async fn test_close_position_non_signer_lender() {
         &[&ctx.payer, &lender],
         blockhash,
     );
+
+    if pos.haircut_owed > 0 {
+        // Distressed withdrawal left haircut_owed > 0 — close must fail with error 34.
+        let err = ctx.banks_client.process_transaction(tx).await.unwrap_err();
+        let code = common::extract_custom_error(&err).expect("expected Custom error");
+        assert_eq!(
+            code, 34,
+            "expected PositionNotEmpty (34) due to pending haircut"
+        );
+        return;
+    }
+
     ctx.banks_client.process_transaction(tx).await.unwrap();
     let lender_lamports_after_close = ctx
         .banks_client
@@ -1129,6 +1145,10 @@ async fn test_close_position_wrong_lender() {
     );
 
     // Boundary neighbor: the true lender can close successfully.
+    // COAL-H01: Read position data before close attempt to check haircut_owed.
+    let pos_data = common::get_account_data(&mut ctx, &lender_a_position).await;
+    let pos = common::parse_lender_position(&pos_data);
+
     let position_lamports_before_close = ctx
         .banks_client
         .get_account(lender_a_position)
@@ -1151,6 +1171,18 @@ async fn test_close_position_wrong_lender() {
         &[&ctx.payer, &lender_a],
         blockhash,
     );
+
+    if pos.haircut_owed > 0 {
+        // Distressed withdrawal left haircut_owed > 0 — close must fail with error 34.
+        let err = ctx.banks_client.process_transaction(tx).await.unwrap_err();
+        let code = common::extract_custom_error(&err).expect("expected Custom error");
+        assert_eq!(
+            code, 34,
+            "expected PositionNotEmpty (34) due to pending haircut"
+        );
+        return;
+    }
+
     ctx.banks_client.process_transaction(tx).await.unwrap();
     let lender_a_lamports_after_close = ctx
         .banks_client

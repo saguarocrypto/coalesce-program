@@ -1078,15 +1078,15 @@ fn borrow_validation_completeness_matrix() {
 
     // Check 10: blacklist check
 
-    // Check 11: amount > borrowable -> BorrowAmountTooHigh
-    // borrowable = vault_balance - min(vault_balance, accrued_fees)
-    // If vault has 1000, fees are 200, borrowable = 800
-    market.set_accrued_protocol_fees(200);
+    // Check 10b: is_whitelisted flag (COAL-I02)
+
+    // Check 11: amount > vault_balance -> BorrowAmountTooHigh
+    // COAL-L02: No fee reservation; borrowable = full vault balance
     let vault_balance: u64 = 1000;
-    let fees_reserved = core::cmp::min(vault_balance, market.accrued_protocol_fees());
-    let borrowable = vault_balance - fees_reserved;
-    assert_eq!(borrowable, 800);
-    assert!(900 > borrowable, "Amount > borrowable must be detected");
+    assert!(
+        1100 > vault_balance,
+        "Amount > vault_balance must be detected"
+    );
 
     // Check 12: borrower_whitelist PDA mismatch -> InvalidPDA
     let borrower_pub = Pubkey::new_unique();

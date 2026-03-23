@@ -587,7 +587,11 @@ async fn test_close_position_double_close() {
     );
     ctx.banks_client.process_transaction(tx).await.unwrap();
 
-    // First close — should succeed
+    // COAL-H01: If the withdrawal was distressed, haircut_owed > 0 blocks close.
+    let (position_pda, _) = common::get_lender_position_pda(&market, &lender.pubkey());
+    let pos_data = common::get_account_data(&mut ctx, &position_pda).await;
+    let pos = common::parse_lender_position(&pos_data);
+
     let close_ix = common::build_close_lender_position(&market, &lender.pubkey());
     let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
@@ -596,10 +600,21 @@ async fn test_close_position_double_close() {
         &[&ctx.payer, &lender],
         recent,
     );
+
+    if pos.haircut_owed > 0 {
+        // Distressed — close fails with PositionNotEmpty, verify and return
+        let err = ctx.banks_client.process_transaction(tx).await.unwrap_err();
+        let code = common::extract_custom_error(&err).expect("expected Custom error");
+        assert_eq!(
+            code, 34,
+            "expected PositionNotEmpty (34) due to pending haircut"
+        );
+        return;
+    }
+
     ctx.banks_client.process_transaction(tx).await.unwrap();
 
     // Verify position is closed
-    let (position_pda, _) = common::get_lender_position_pda(&market, &lender.pubkey());
     let position_account = ctx.banks_client.get_account(position_pda).await.unwrap();
     match position_account {
         None => { /* good — account closed */ },

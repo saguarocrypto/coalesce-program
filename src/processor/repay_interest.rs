@@ -15,6 +15,10 @@ use crate::state::{Market, ProtocolConfig};
 /// This instruction allows borrowers to pay interest without reducing `current_borrowed`,
 /// ensuring that interest payments don't artificially free up borrowing capacity.
 /// Anyone may call (e.g., the borrower or a third party on their behalf).
+///
+/// Compliance note: No blacklist check is performed on the payer because interest
+/// repayment reduces protocol risk. Blocking a sanctioned entity from repaying
+/// would leave the market under-collateralized, harming innocent lenders.
 pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> ProgramResult {
     if accounts.len() < 6 {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -35,9 +39,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     if data.len() < 8 {
         return Err(ProgramError::InvalidInstructionData);
     }
-    let amount = u64::from_le_bytes([
-        data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
-    ]);
+    let amount = u64::from_le_bytes(
+        data[0..8]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidInstructionData)?,
+    );
 
     // SR-045: amount > 0
     if amount == 0 {
@@ -123,6 +129,19 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         return Err(LendingError::InvalidAccountOwner.into());
     }
 
+    // CEI: Update market state BEFORE transfer CPI (Finding 3).
+    let new_total_repaid = market
+        .total_repaid()
+        .checked_add(amount)
+        .ok_or(LendingError::MathOverflow)?;
+    market.set_total_repaid(new_total_repaid);
+
+    let new_interest_repaid = market
+        .total_interest_repaid()
+        .checked_add(amount)
+        .ok_or(LendingError::MathOverflow)?;
+    market.set_total_interest_repaid(new_interest_repaid);
+
     // Step 2: Transfer tokens (payer -> vault)
     pinocchio_token::instructions::Transfer {
         from: payer_token_account,
@@ -131,22 +150,6 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
         amount,
     }
     .invoke()?;
-
-    // Step 3: Update market - track interest repaid separately
-    // This adds to total_repaid for overall tracking, but does NOT affect
-    // borrower's current_borrowed (preserving their capacity)
-    let new_total_repaid = market
-        .total_repaid()
-        .checked_add(amount)
-        .ok_or(LendingError::MathOverflow)?;
-    market.set_total_repaid(new_total_repaid);
-
-    // Also track interest repaid specifically for analytics
-    let new_interest_repaid = market
-        .total_interest_repaid()
-        .checked_add(amount)
-        .ok_or(LendingError::MathOverflow)?;
-    market.set_total_interest_repaid(new_interest_repaid);
 
     // NOTE: We intentionally do NOT update the borrower's current_borrowed.
     // This is the key difference from the regular repay instruction.

@@ -189,12 +189,12 @@ fn oracle_fee_single_step(
 ) -> Option<u64> {
     let growth = oracle_growth_factor_wad(annual_bps, elapsed)?;
     let delta_wad = growth.checked_sub(WAD)?;
-    let new_sf = mul_wad_oracle(WAD, growth)?;
     let fee_delta_wad = delta_wad
         .checked_mul(u128::from(fee_rate_bps))?
         .checked_div(BPS)?;
+    // Use pre-accrual scale factor WAD (matches on-chain Finding 10 fix)
     let fee = supply
-        .checked_mul(new_sf)?
+        .checked_mul(WAD)?
         .checked_div(WAD)?
         .checked_mul(fee_delta_wad)?
         .checked_div(WAD)?;

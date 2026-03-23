@@ -14,8 +14,11 @@ use crate::logic::validation::{
 };
 use crate::state::{BorrowerWhitelist, Market, ProtocolConfig};
 
-/// Borrow (disc 6)
+/// Borrow (disc 4)
 /// Borrower withdraws USDC from the market vault.
+///
+/// Note: Borrowable liquidity is the full vault balance. Protocol fees are
+/// enforced at settlement time (collect_fees distress guard), not pre-maturity.
 pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> ProgramResult {
     if accounts.len() < 9 {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -39,9 +42,11 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     if data.len() < 8 {
         return Err(ProgramError::InvalidInstructionData);
     }
-    let amount = u64::from_le_bytes([
-        data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
-    ]);
+    let amount = u64::from_le_bytes(
+        data[0..8]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidInstructionData)?,
+    );
 
     // SR-042: amount > 0
     if amount == 0 {
@@ -117,7 +122,7 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     // Step 1: Accrue interest
     accrue_interest(market, config, current_ts)?;
 
-    // Step 2: Compute borrowable (fee reservation)
+    // Step 2: Compute borrowable
     // Read vault balance
     // SR-117: Verify vault account is owned by token program before unsafe deserialization
     if unsafe { vault_account.owner() } != &pinocchio_token::ID {
@@ -131,14 +136,14 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     if *vault_token.mint().as_ref() != market.mint {
         return Err(LendingError::InvalidMint.into());
     }
+    // COAL-L02: Use full vault balance as borrowable amount.
+    // accrued_protocol_fees are virtual pre-maturity — collect_fees blocks
+    // extraction while lenders have deposits (SR-113), so reserving them
+    // here only suppresses borrowable liquidity with no benefit.
     let vault_balance = vault_token.amount();
-    let fees_reserved = core::cmp::min(vault_balance, market.accrued_protocol_fees());
-    let borrowable = vault_balance
-        .checked_sub(fees_reserved)
-        .ok_or(LendingError::MathOverflow)?;
 
-    // Step 3: Validate amount <= borrowable
-    if amount > borrowable {
+    // Step 3: Validate amount <= vault balance
+    if amount > vault_balance {
         return Err(LendingError::BorrowAmountTooHigh.into());
     }
 
@@ -164,6 +169,13 @@ pub fn process(program_id: &Address, accounts: &[AccountView], data: &[u8]) -> P
     // Discriminator check for BorrowerWhitelist
     if wl.discriminator != DISC_BORROWER_WL {
         return Err(ProgramError::InvalidAccountData);
+    }
+
+    // COAL-I02: Check is_whitelisted flag explicitly.
+    // Without this, a de-whitelisted borrower with residual max_borrow_capacity
+    // could still borrow, inconsistent with create_market.rs which checks the flag.
+    if wl.is_whitelisted != 1 {
+        return Err(LendingError::NotWhitelisted.into());
     }
 
     let new_wl_borrowed = wl

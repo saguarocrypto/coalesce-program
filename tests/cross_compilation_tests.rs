@@ -66,7 +66,7 @@ use core::mem::{offset_of, size_of};
 use coalesce::constants::{BPS, SECONDS_PER_YEAR, WAD};
 use coalesce::error::LendingError;
 use coalesce::logic::interest::accrue_interest;
-use coalesce::state::{BorrowerWhitelist, LenderPosition, Market, ProtocolConfig};
+use coalesce::state::{BorrowerWhitelist, HaircutState, LenderPosition, Market, ProtocolConfig};
 use pinocchio::error::ProgramError;
 
 #[path = "common/interest_oracle.rs"]
@@ -722,7 +722,8 @@ fn pod_layout_market_size_and_offsets() {
     assert_eq!(offset_of!(Market, last_accrual_timestamp), 204);
     assert_eq!(offset_of!(Market, settlement_factor_wad), 212);
     assert_eq!(offset_of!(Market, bump), 228);
-    assert_eq!(offset_of!(Market, padding), 229);
+    assert_eq!(offset_of!(Market, haircut_accumulator), 229);
+    assert_eq!(offset_of!(Market, padding), 237);
 }
 
 #[test]
@@ -825,7 +826,7 @@ fn pod_layout_protocol_config_write_and_verify_raw() {
     assert_eq!(raw[140], 200);
     assert_eq!(raw[141], 0); // paused (zeroed)
     assert_eq!(raw[142], 0); // blacklist_mode (zeroed)
-    assert_eq!(&raw[143..194], &[0u8; 51]);
+    assert_eq!(&raw[143..194], &[0u8; 51]); // padding (zeroed)
 }
 
 #[test]
@@ -838,7 +839,9 @@ fn pod_layout_lender_position_size_and_offsets() {
     assert_eq!(offset_of!(LenderPosition, lender), 41);
     assert_eq!(offset_of!(LenderPosition, scaled_balance), 73);
     assert_eq!(offset_of!(LenderPosition, bump), 89);
-    assert_eq!(offset_of!(LenderPosition, padding), 90);
+    assert_eq!(offset_of!(LenderPosition, haircut_owed), 90);
+    assert_eq!(offset_of!(LenderPosition, withdrawal_sf), 98);
+    assert_eq!(offset_of!(LenderPosition, padding), 114);
 }
 
 #[test]
@@ -860,6 +863,7 @@ fn pod_layout_lender_position_write_and_verify_raw() {
         &0xDEAD_BEEF_CAFE_BABE_1234_5678_9ABC_DEF0u128.to_le_bytes()
     );
     assert_eq!(raw[89], 123);
+    // haircut_owed (90..98), withdrawal_sf (98..114), padding (114..128) all zeroed
     assert_eq!(&raw[90..128], &[0u8; 38]);
 }
 
@@ -898,6 +902,19 @@ fn pod_layout_borrower_whitelist_write_and_verify_raw() {
     assert_eq!(&raw[59..96], &[0u8; 37]);
 }
 
+#[test]
+fn pod_layout_haircut_state_size_and_offsets() {
+    assert_eq!(size_of::<HaircutState>(), 88);
+
+    assert_eq!(offset_of!(HaircutState, discriminator), 0);
+    assert_eq!(offset_of!(HaircutState, version), 8);
+    assert_eq!(offset_of!(HaircutState, market), 9);
+    assert_eq!(offset_of!(HaircutState, claim_weight_sum), 41);
+    assert_eq!(offset_of!(HaircutState, claim_offset_sum), 57);
+    assert_eq!(offset_of!(HaircutState, bump), 73);
+    assert_eq!(offset_of!(HaircutState, padding), 74);
+}
+
 // ===========================================================================
 // 5. INTEREST COMPUTATION GOLDEN VECTORS
 //    Table of (annual_bps, time_elapsed, initial_scale_factor, fee_rate,
@@ -930,7 +947,7 @@ fn analytical_accrue(
     let new_sf = interest_oracle::scale_factor_after_exact(initial_sf, annual_bps_u16, elapsed_i64);
     let fees = interest_oracle::fee_delta_exact(
         supply,
-        new_sf,
+        initial_sf,
         annual_bps_u16,
         fee_rate_bps_u16,
         elapsed_i64,

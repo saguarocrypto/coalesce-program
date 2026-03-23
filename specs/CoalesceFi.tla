@@ -9,7 +9,7 @@
  * Operations modeled:
  *   CreateMarket, Deposit, Borrow, Repay, RepayInterest, AccrueInterest,
  *   Withdraw, CollectFees, ReSettle, CloseLenderPosition, WithdrawExcess,
- *   SetPause, Tick (time advance)
+ *   ForceClosePosition, SetPause, Tick (time advance)
  *
  * Omitted operations (pure admin config, no effect on protocol invariants):
  *   SetBlacklistMode, SetAdmin, SetWhitelistManager
@@ -90,7 +90,12 @@ VARIABLES
     total_payouts,
 
     \* Emergency pause flag
-    is_paused
+    is_paused,
+
+    \* COAL-H01: Accumulated haircut gaps from distressed withdrawals/force-close.
+    \* Prevents re_settle from recycling tokens into an inflated factor and
+    \* prevents borrower from sweeping unpaid lender value via withdraw_excess.
+    haircut_accumulator
 
 \* All variables as a tuple for stuttering
 vars == <<market_initialized, scale_factor, scaled_total_supply,
@@ -99,7 +104,7 @@ vars == <<market_initialized, scale_factor, scaled_total_supply,
           settlement_factor_wad,
           vault_balance, lender_scaled_balance, whitelist_current_borrowed,
           current_time, prev_scale_factor, prev_settlement_factor,
-          total_payouts, is_paused>>
+          total_payouts, is_paused, haircut_accumulator>>
 
 \* -----------------------------------------------------------------------
 \* Helper operators
@@ -117,8 +122,9 @@ Max(a, b) == IF a > b THEN a ELSE b
 \* Normalized total supply: scaled_total_supply * scale_factor / WAD
 NormalizedTotalSupply == Div(scaled_total_supply * scale_factor, WAD)
 
-\* Available balance for lenders (vault minus reserved fees)
-AvailableForLenders == vault_balance - Min(vault_balance, accrued_protocol_fees)
+\* Available balance for lenders.
+\* COAL-C01: No fee reservation — full vault balance is available for settlement.
+AvailableForLenders == vault_balance
 
 \* Compute settlement factor from current state
 ComputeSettlementFactor ==
@@ -154,9 +160,10 @@ AccrueInterestEffect ==
              fee_delta_wad == IF FeeRateBps > 0
                               THEN Div(interest_delta_wad * FeeRateBps, BPS)
                               ELSE 0
-             \* fee_normalized = scaled_total_supply * new_sf / WAD * fee_delta_wad / WAD
+             \* COAL-C02: fee_normalized uses pre-accrual scale_factor (not new_sf)
+             \* to prevent protocol from collecting fees on its own fee accrual.
              fee_normalized == IF FeeRateBps > 0
-                               THEN Div(Div(scaled_total_supply * new_sf, WAD) * fee_delta_wad, WAD)
+                               THEN Div(Div(scaled_total_supply * scale_factor, WAD) * fee_delta_wad, WAD)
                                ELSE 0
              new_fees == accrued_protocol_fees + fee_normalized
          IN <<new_sf, new_fees, effective_now>>
@@ -184,6 +191,7 @@ Init ==
     /\ prev_settlement_factor = 0
     /\ total_payouts = 0
     /\ is_paused = FALSE
+    /\ haircut_accumulator = 0
 
 \* -----------------------------------------------------------------------
 \* CreateMarket
@@ -206,6 +214,7 @@ CreateMarket ==
     /\ prev_settlement_factor' = 0
     /\ total_payouts' = 0
     /\ is_paused' = FALSE
+    /\ haircut_accumulator' = 0
     /\ UNCHANGED <<lender_scaled_balance, whitelist_current_borrowed, current_time>>
 
 \* -----------------------------------------------------------------------
@@ -245,7 +254,7 @@ Deposit(lender, amount) ==
                                settlement_factor_wad,
                                whitelist_current_borrowed, current_time,
                                prev_settlement_factor, total_payouts,
-                               is_paused>>
+                               is_paused, haircut_accumulator>>
 
 \* -----------------------------------------------------------------------
 \* Borrow
@@ -262,9 +271,9 @@ Borrow(amount) ==
            new_sf == accrual[1]
            new_fees == accrual[2]
            new_last == accrual[3]
-           \* Fee reservation: min(vault_balance, accrued_fees)
-           fees_reserved == Min(vault_balance, new_fees)
-           borrowable == vault_balance - fees_reserved
+           \* COAL-C01: Full vault balance is borrowable (no fee reservation).
+           \* Fees are enforced at settlement via collect_fees distress guard.
+           borrowable == vault_balance
        IN /\ amount <= borrowable
           /\ whitelist_current_borrowed + amount <= WhitelistMaxCapacity
           /\ scale_factor' = new_sf
@@ -278,7 +287,7 @@ Borrow(amount) ==
                          total_deposited, total_repaid, total_interest_repaid,
                          settlement_factor_wad, lender_scaled_balance,
                          current_time, prev_settlement_factor,
-                         total_payouts, is_paused>>
+                         total_payouts, is_paused, haircut_accumulator>>
 
 \* -----------------------------------------------------------------------
 \* Repay
@@ -312,7 +321,8 @@ Repay(amount) ==
                          total_deposited, total_borrowed, total_interest_repaid,
                          settlement_factor_wad, lender_scaled_balance,
                          whitelist_current_borrowed, current_time,
-                         prev_settlement_factor, total_payouts, is_paused>>
+                         prev_settlement_factor, total_payouts, is_paused,
+                         haircut_accumulator>>
 
 \* -----------------------------------------------------------------------
 \* RepayInterest
@@ -348,7 +358,8 @@ RepayInterest(amount) ==
                          total_deposited, total_borrowed,
                          settlement_factor_wad, lender_scaled_balance,
                          whitelist_current_borrowed, current_time,
-                         prev_settlement_factor, total_payouts, is_paused>>
+                         prev_settlement_factor, total_payouts, is_paused,
+                         haircut_accumulator>>
 
 \* -----------------------------------------------------------------------
 \* Withdraw
@@ -363,19 +374,21 @@ Withdraw(lender) ==
            new_sf == accrual[1]
            new_fees == accrual[2]
            new_last == accrual[3]
-           \* On first withdrawal, compute and lock settlement factor
+           \* On first withdrawal, compute and lock settlement factor.
+           \* COAL-C01: Uses full vault_balance (no fee reservation).
            sf_wad == IF settlement_factor_wad = 0
                      THEN LET total_norm == Div(scaled_total_supply * new_sf, WAD)
-                              avail == vault_balance - Min(vault_balance, new_fees)
                           IN IF total_norm = 0
                              THEN WAD
-                             ELSE Max(1, Min(WAD, Div(avail * WAD, total_norm)))
+                             ELSE Max(1, Min(WAD, Div(vault_balance * WAD, total_norm)))
                      ELSE settlement_factor_wad
            \* Full withdrawal (scaled_amount = entire balance)
            scaled_amount == lender_scaled_balance[lender]
            \* Payout = scaled_amount * new_sf / WAD * sf_wad / WAD
            normalized_amount == Div(scaled_amount * new_sf, WAD)
            payout == Div(normalized_amount * sf_wad, WAD)
+           \* COAL-H01: Track haircut gap during distress
+           gap == IF sf_wad < WAD THEN normalized_amount - payout ELSE 0
        IN /\ payout > 0                   \* Revert if zero payout
           /\ payout <= vault_balance       \* Must have enough in vault
           /\ scale_factor' = new_sf
@@ -386,6 +399,7 @@ Withdraw(lender) ==
           /\ lender_scaled_balance' =
                [lender_scaled_balance EXCEPT ![lender] = 0]
           /\ scaled_total_supply' = scaled_total_supply - scaled_amount
+          /\ haircut_accumulator' = haircut_accumulator + gap
           /\ total_payouts' = total_payouts + payout
           /\ prev_scale_factor' = new_sf
           /\ prev_settlement_factor' = sf_wad
@@ -400,12 +414,27 @@ Withdraw(lender) ==
 CollectFees ==
     /\ market_initialized = TRUE
     /\ is_paused = FALSE
+    \* COAL-C01: Distress guard — block fee collection when sf is set but < WAD.
+    \* During distress, lender recovery takes priority over fee collection.
+    /\ (settlement_factor_wad = 0 \/ settlement_factor_wad = WAD)
+    \* SR-113: Block when lenders have pending withdrawals (unless sf == WAD)
+    /\ (scaled_total_supply = 0 \/ settlement_factor_wad = WAD)
     /\ LET accrual == AccrueInterestEffect
            new_sf == accrual[1]
            new_fees == accrual[2]
            new_last == accrual[3]
        IN /\ new_fees > 0                    \* Must have fees to collect
-          /\ LET withdrawable == Min(new_fees, vault_balance)
+          /\ LET base_withdrawable == Min(new_fees, vault_balance)
+                 \* COAL-C01: Cap at vault surplus above lender obligations
+                 lender_claims == IF scaled_total_supply > 0
+                                  THEN Div(scaled_total_supply * new_sf, WAD)
+                                  ELSE 0
+                 safe_max == IF vault_balance > lender_claims
+                             THEN vault_balance - lender_claims
+                             ELSE 0
+                 withdrawable == IF scaled_total_supply > 0
+                                 THEN Min(base_withdrawable, safe_max)
+                                 ELSE base_withdrawable
              IN /\ withdrawable > 0
                 /\ scale_factor' = new_sf
                 /\ accrued_protocol_fees' = new_fees - withdrawable
@@ -419,7 +448,7 @@ CollectFees ==
                                lender_scaled_balance,
                                whitelist_current_borrowed, current_time,
                                prev_settlement_factor, total_payouts,
-                               is_paused>>
+                               is_paused, haircut_accumulator>>
 
 \* -----------------------------------------------------------------------
 \* ReSettle
@@ -441,8 +470,11 @@ ReSettle ==
            new_sf == scale_factor + scale_factor_delta
            new_last == IF time_elapsed <= 0 THEN last_accrual_timestamp ELSE effective_now
            \* Compute new settlement factor
+           \* COAL-H01: Subtract haircut accumulator to prevent recycled inflation
            total_norm == Div(scaled_total_supply * new_sf, WAD)
-           avail == vault_balance - Min(vault_balance, accrued_protocol_fees)
+           avail == IF vault_balance > haircut_accumulator
+                    THEN vault_balance - haircut_accumulator
+                    ELSE 0
            new_factor == IF total_norm = 0
                          THEN WAD
                          ELSE Max(1, Min(WAD, Div(avail * WAD, total_norm)))
@@ -460,7 +492,7 @@ ReSettle ==
                          vault_balance,
                          lender_scaled_balance,
                          whitelist_current_borrowed, current_time,
-                         total_payouts, is_paused>>
+                         total_payouts, is_paused, haircut_accumulator>>
 
 \* -----------------------------------------------------------------------
 \* CloseLenderPosition (modeled as a no-op check)
@@ -473,6 +505,51 @@ CloseLenderPosition(lender) ==
     \* In reality this closes the account; in our model it is a no-op
     \* since the balance is already 0. We include it for completeness.
     /\ UNCHANGED vars
+
+\* -----------------------------------------------------------------------
+\* ForceClosePosition (disc 18)
+\* Borrower force-closes a lender position after maturity + grace period.
+\* Computes payout (same formula as Withdraw), transfers to escrow,
+\* zeros the position, and decrements scaled_total_supply.
+\* -----------------------------------------------------------------------
+
+ForceClosePosition(lender) ==
+    /\ market_initialized = TRUE
+    /\ is_paused = FALSE
+    /\ current_time > MaturityTimestamp       \* Must be past maturity + grace period
+    /\ lender_scaled_balance[lender] > 0      \* Must have balance
+    /\ LET accrual == AccrueInterestEffect
+           new_sf == accrual[1]
+           new_fees == accrual[2]
+           new_last == accrual[3]
+           \* Compute or use existing settlement factor (uses full vault, COAL-C01)
+           sf_wad == IF settlement_factor_wad = 0
+                     THEN LET total_norm == Div(scaled_total_supply * new_sf, WAD)
+                          IN IF total_norm = 0
+                             THEN WAD
+                             ELSE Max(1, Min(WAD, Div(vault_balance * WAD, total_norm)))
+                     ELSE settlement_factor_wad
+           scaled_amount == lender_scaled_balance[lender]
+           normalized_amount == Div(scaled_amount * new_sf, WAD)
+           payout == Div(normalized_amount * sf_wad, WAD)
+           \* COAL-H01: Track haircut gap during distress
+           gap == IF sf_wad < WAD THEN normalized_amount - payout ELSE 0
+       IN /\ payout <= vault_balance
+          /\ scale_factor' = new_sf
+          /\ accrued_protocol_fees' = new_fees
+          /\ last_accrual_timestamp' = new_last
+          /\ settlement_factor_wad' = sf_wad
+          /\ vault_balance' = vault_balance - payout
+          /\ lender_scaled_balance' =
+               [lender_scaled_balance EXCEPT ![lender] = 0]
+          /\ scaled_total_supply' = scaled_total_supply - scaled_amount
+          /\ haircut_accumulator' = haircut_accumulator + gap
+          /\ total_payouts' = total_payouts + payout
+          /\ prev_scale_factor' = new_sf
+          /\ prev_settlement_factor' = sf_wad
+          /\ UNCHANGED <<market_initialized, total_deposited,
+                         total_borrowed, total_repaid, total_interest_repaid,
+                         whitelist_current_borrowed, current_time, is_paused>>
 
 \* -----------------------------------------------------------------------
 \* WithdrawExcess
@@ -488,15 +565,21 @@ WithdrawExcess ==
     /\ settlement_factor_wad = WAD
     /\ accrued_protocol_fees = 0
     /\ vault_balance > 0
-    /\ vault_balance' = 0
-    /\ total_payouts' = total_payouts + vault_balance
+    \* COAL-H01: Excess is vault minus haircut accumulator (unpaid lender value
+    \* from distressed withdrawals/force-close must not be swept by borrower)
+    /\ LET excess == IF vault_balance > haircut_accumulator
+                     THEN vault_balance - haircut_accumulator
+                     ELSE 0
+       IN /\ excess > 0
+          /\ vault_balance' = vault_balance - excess
+          /\ total_payouts' = total_payouts + excess
     /\ UNCHANGED <<market_initialized, scale_factor, scaled_total_supply,
                    accrued_protocol_fees, total_deposited, total_borrowed,
                    total_repaid, total_interest_repaid,
                    last_accrual_timestamp, settlement_factor_wad,
                    lender_scaled_balance, whitelist_current_borrowed,
                    current_time, prev_scale_factor, prev_settlement_factor,
-                   is_paused>>
+                   is_paused, haircut_accumulator>>
 
 \* -----------------------------------------------------------------------
 \* SetPause — flip the is_paused flag
@@ -512,7 +595,7 @@ SetPause(flag) ==
                    vault_balance, lender_scaled_balance,
                    whitelist_current_borrowed, current_time,
                    prev_scale_factor, prev_settlement_factor,
-                   total_payouts>>
+                   total_payouts, haircut_accumulator>>
 
 \* -----------------------------------------------------------------------
 \* Tick — advance time by 1 unit
@@ -527,7 +610,8 @@ Tick ==
                    last_accrual_timestamp, settlement_factor_wad,
                    vault_balance, lender_scaled_balance,
                    whitelist_current_borrowed, prev_scale_factor,
-                   prev_settlement_factor, total_payouts, is_paused>>
+                   prev_settlement_factor, total_payouts, is_paused,
+                   haircut_accumulator>>
 
 \* -----------------------------------------------------------------------
 \* Next state relation
@@ -543,6 +627,7 @@ Next ==
     \/ CollectFees
     \/ ReSettle
     \/ \E l \in Lenders : CloseLenderPosition(l)
+    \/ \E l \in Lenders : ForceClosePosition(l)
     \/ WithdrawExcess
     \/ SetPause(TRUE)
     \/ SetPause(FALSE)
@@ -623,6 +708,7 @@ TypeInvariant ==
     /\ current_time >= 0
     /\ total_payouts >= 0
     /\ is_paused \in BOOLEAN
+    /\ haircut_accumulator >= 0
 
 \* All invariants combined
 AllInvariants ==

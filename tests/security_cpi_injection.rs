@@ -428,3 +428,146 @@ async fn test_withdraw_fake_token_program() {
         common::ProtocolSnapshot::capture(&mut t.ctx, &t.market, &vault, &[lender_position]).await;
     snap_before.assert_unchanged(&snap_after);
 }
+
+/// RepayInterest with a fake token program should fail with InvalidTokenProgram (15).
+#[tokio::test]
+async fn test_repay_interest_fake_token_program() {
+    let mut t = setup_cpi_test().await;
+
+    let (vault, _) = common::get_vault_pda(&t.market);
+    let lender_position = common::get_lender_position_pda(&t.market, &t.lender.pubkey()).0;
+    let borrower_token_before = common::get_token_balance(&mut t.ctx, &t.borrower_token).await;
+    let snap_before =
+        common::ProtocolSnapshot::capture(&mut t.ctx, &t.market, &vault, &[lender_position]).await;
+
+    let mut ix = common::build_repay_interest_with_amount(
+        &t.market,
+        &t.borrower.pubkey(),
+        &t.borrower_token,
+        100 * USDC,
+    );
+    // Replace token_program (index 5) with a fake pubkey
+    assert_eq!(
+        ix.accounts[5].pubkey,
+        spl_token::id(),
+        "repay_interest token-program account index changed"
+    );
+    let fake_program = Pubkey::new_unique();
+    ix.accounts[5] = AccountMeta::new_readonly(fake_program, false);
+
+    let recent = t.ctx.banks_client.get_latest_blockhash().await.unwrap();
+    let tx = Transaction::new_signed_with_payer(
+        &[ix],
+        Some(&t.borrower.pubkey()),
+        &[&t.borrower],
+        recent,
+    );
+    let result = t
+        .ctx
+        .banks_client
+        .process_transaction(tx)
+        .await
+        .map_err(|e| e.unwrap());
+    common::assert_custom_error(&result, 15); // InvalidTokenProgram
+
+    let borrower_token_after = common::get_token_balance(&mut t.ctx, &t.borrower_token).await;
+    assert_eq!(
+        borrower_token_before, borrower_token_after,
+        "borrower token balance changed on failed repay_interest with fake token program"
+    );
+
+    let snap_after =
+        common::ProtocolSnapshot::capture(&mut t.ctx, &t.market, &vault, &[lender_position]).await;
+    snap_before.assert_unchanged(&snap_after);
+}
+
+/// CollectFees with a fake token program should fail with InvalidTokenProgram (15).
+#[tokio::test]
+async fn test_collect_fees_fake_token_program() {
+    let mut t = setup_cpi_test().await;
+
+    let (vault, _) = common::get_vault_pda(&t.market);
+    let lender_position = common::get_lender_position_pda(&t.market, &t.lender.pubkey()).0;
+    let snap_before =
+        common::ProtocolSnapshot::capture(&mut t.ctx, &t.market, &vault, &[lender_position]).await;
+
+    // fee_authority is admin (t._admin) in setup — create a fee destination token account
+    let fee_dest_kp = common::create_token_account(&mut t.ctx, &t.mint, &t._admin.pubkey()).await;
+
+    let mut ix = common::build_collect_fees(&t.market, &t._admin.pubkey(), &fee_dest_kp.pubkey());
+    // Replace token_program (index 6) with a fake pubkey
+    assert_eq!(
+        ix.accounts[6].pubkey,
+        spl_token::id(),
+        "collect_fees token-program account index changed"
+    );
+    let fake_program = Pubkey::new_unique();
+    ix.accounts[6] = AccountMeta::new_readonly(fake_program, false);
+
+    let recent = t.ctx.banks_client.get_latest_blockhash().await.unwrap();
+    let tx =
+        Transaction::new_signed_with_payer(&[ix], Some(&t._admin.pubkey()), &[&t._admin], recent);
+    let result = t
+        .ctx
+        .banks_client
+        .process_transaction(tx)
+        .await
+        .map_err(|e| e.unwrap());
+    common::assert_custom_error(&result, 15); // InvalidTokenProgram
+
+    let snap_after =
+        common::ProtocolSnapshot::capture(&mut t.ctx, &t.market, &vault, &[lender_position]).await;
+    snap_before.assert_unchanged(&snap_after);
+}
+
+/// WithdrawExcess with a fake token program should fail with InvalidTokenProgram (15).
+#[tokio::test]
+async fn test_withdraw_excess_fake_token_program() {
+    let mut t = setup_cpi_test().await;
+
+    let (vault, _) = common::get_vault_pda(&t.market);
+    let lender_position = common::get_lender_position_pda(&t.market, &t.lender.pubkey()).0;
+    let borrower_token_before = common::get_token_balance(&mut t.ctx, &t.borrower_token).await;
+    let snap_before =
+        common::ProtocolSnapshot::capture(&mut t.ctx, &t.market, &vault, &[lender_position]).await;
+
+    let mut ix = common::build_withdraw_excess(
+        &t.market,
+        &t.borrower.pubkey(),
+        &t.borrower_token,
+        &t.blacklist_program,
+    );
+    // Replace token_program (index 5) with a fake pubkey
+    assert_eq!(
+        ix.accounts[5].pubkey,
+        spl_token::id(),
+        "withdraw_excess token-program account index changed"
+    );
+    let fake_program = Pubkey::new_unique();
+    ix.accounts[5] = AccountMeta::new_readonly(fake_program, false);
+
+    let recent = t.ctx.banks_client.get_latest_blockhash().await.unwrap();
+    let tx = Transaction::new_signed_with_payer(
+        &[ix],
+        Some(&t.borrower.pubkey()),
+        &[&t.borrower],
+        recent,
+    );
+    let result = t
+        .ctx
+        .banks_client
+        .process_transaction(tx)
+        .await
+        .map_err(|e| e.unwrap());
+    common::assert_custom_error(&result, 15); // InvalidTokenProgram
+
+    let borrower_token_after = common::get_token_balance(&mut t.ctx, &t.borrower_token).await;
+    assert_eq!(
+        borrower_token_before, borrower_token_after,
+        "borrower token balance changed on failed withdraw_excess with fake token program"
+    );
+
+    let snap_after =
+        common::ProtocolSnapshot::capture(&mut t.ctx, &t.market, &vault, &[lender_position]).await;
+    snap_before.assert_unchanged(&snap_after);
+}

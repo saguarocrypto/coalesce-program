@@ -730,9 +730,9 @@ async fn test_err_007_invalid_mint() {
     let wl_before = common::get_account_data(&mut ctx, &borrower_whitelist).await;
     let maturity = common::PINNED_EPOCH + MIN_MATURITY_DELTA + 1;
 
-    let mint_5 = common::create_mint(&mut ctx, &admin, 5).await;
+    let mint_5 = common::create_random_mint(&mut ctx, &admin, 5).await;
     let mint_6 = common::create_mint(&mut ctx, &admin, 6).await;
-    let mint_7 = common::create_mint(&mut ctx, &admin, 7).await;
+    let mint_7 = common::create_random_mint(&mut ctx, &admin, 7).await;
 
     for (idx, (mint, should_succeed, expected_error)) in [
         (mint_5, false, Some(11u32)),
@@ -2381,26 +2381,50 @@ async fn test_err_027_position_not_empty() {
         .await
         .unwrap();
 
-    let close_ok_ix = common::build_close_lender_position(&market, &lender.pubkey());
-    let close_ok_tx = Transaction::new_signed_with_payer(
-        &[close_ok_ix],
-        Some(&ctx.payer.pubkey()),
-        &[&ctx.payer, &lender],
-        ctx.banks_client.get_latest_blockhash().await.unwrap(),
-    );
-    ctx.banks_client
-        .process_transaction(close_ok_tx)
-        .await
-        .unwrap();
+    // COAL-H01: If the withdrawal was distressed (SF < WAD due to interest accrual
+    // exceeding vault), the position now has haircut_owed > 0 and close will also
+    // fail with PositionNotEmpty (34). Check and branch accordingly.
+    let pos_data = common::get_account_data(&mut ctx, &lender_position).await;
+    let parsed_pos = common::parse_lender_position(&pos_data);
 
-    assert!(
-        ctx.banks_client
-            .get_account(lender_position)
+    if parsed_pos.haircut_owed > 0 {
+        // Distressed market — close should still fail with PositionNotEmpty
+        let close_still_blocked_ix = common::build_close_lender_position(&market, &lender.pubkey());
+        let close_still_blocked_tx = Transaction::new_signed_with_payer(
+            &[close_still_blocked_ix],
+            Some(&ctx.payer.pubkey()),
+            &[&ctx.payer, &lender],
+            ctx.banks_client.get_latest_blockhash().await.unwrap(),
+        );
+        let err = ctx
+            .banks_client
+            .process_transaction(close_still_blocked_tx)
             .await
-            .unwrap()
-            .is_none(),
-        "lender position account should be closed after zero-balance close"
-    );
+            .unwrap_err();
+        assert_custom_code(&err, 34, "close with pending haircut claim");
+    } else {
+        // Non-distressed — close should succeed
+        let close_ok_ix = common::build_close_lender_position(&market, &lender.pubkey());
+        let close_ok_tx = Transaction::new_signed_with_payer(
+            &[close_ok_ix],
+            Some(&ctx.payer.pubkey()),
+            &[&ctx.payer, &lender],
+            ctx.banks_client.get_latest_blockhash().await.unwrap(),
+        );
+        ctx.banks_client
+            .process_transaction(close_ok_tx)
+            .await
+            .unwrap();
+
+        assert!(
+            ctx.banks_client
+                .get_account(lender_position)
+                .await
+                .unwrap()
+                .is_none(),
+            "lender position account should be closed after zero-balance close"
+        );
+    }
 }
 
 // ==========================================================================

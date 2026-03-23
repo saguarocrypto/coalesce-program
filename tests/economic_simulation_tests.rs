@@ -154,14 +154,12 @@ fn sim_borrow(
     vault_balance: &mut u64,
     amount: u64,
 ) {
-    // Fee reservation check
-    let fees_reserved = core::cmp::min(*vault_balance, market.accrued_protocol_fees());
-    let borrowable = vault_balance.checked_sub(fees_reserved).unwrap();
+    // COAL-L02: no fee reservation, full vault is borrowable
     assert!(
-        amount <= borrowable,
+        amount <= *vault_balance,
         "borrow amount {} exceeds borrowable {}",
         amount,
-        borrowable
+        *vault_balance
     );
 
     // Global capacity check
@@ -192,14 +190,8 @@ fn sim_repay(market: &mut Market, vault_balance: &mut u64, amount: u64) {
 /// Compute the settlement factor given current vault state.
 /// Follows the exact logic from `processor/withdraw.rs` and `processor/re_settle.rs`.
 fn compute_settlement_factor(market: &Market, vault_balance: u64) -> u128 {
-    let vault_u128 = u128::from(vault_balance);
-    let fees_u128 = u128::from(market.accrued_protocol_fees());
-    let fees_reserved = if vault_u128 < fees_u128 {
-        vault_u128
-    } else {
-        fees_u128
-    };
-    let available_for_lenders = vault_u128.checked_sub(fees_reserved).unwrap();
+    // COAL-C01: no fee reservation, full vault is available for lenders
+    let available_for_lenders = u128::from(vault_balance);
 
     let total_normalized = market
         .scaled_total_supply()
@@ -277,15 +269,15 @@ fn fee_delta_after_elapsed(
     }
 
     let growth = math_oracle::growth_factor_wad(annual_bps, elapsed_seconds);
-    let new_sf = math_oracle::mul_wad(scale_factor_before, growth);
     let interest_delta_wad = growth.checked_sub(WAD).unwrap();
     let fee_delta_wad = interest_delta_wad
         .checked_mul(u128::from(fee_rate_bps))
         .unwrap()
         .checked_div(BPS)
         .unwrap();
+    // Use pre-accrual scale_factor_before (matches on-chain Finding 10 fix)
     let fee_normalized = scaled_supply
-        .checked_mul(new_sf)
+        .checked_mul(scale_factor_before)
         .unwrap()
         .checked_div(WAD)
         .unwrap()
@@ -668,33 +660,32 @@ fn scenario_3_fee_impact() {
         factor_a
     );
 
-    // Assertion 6: Market B factor should be strictly less than A because
-    // fees are reserved from the vault, reducing available_for_lenders.
-    assert!(
-        factor_b < factor_a,
-        "Fee market factor {} should be less than no-fee factor {} due to fee reservation",
-        factor_b,
-        factor_a
+    // Assertion 6: COAL-C01 — fees are no longer reserved from vault during settlement,
+    // so both markets should have equal settlement factors (same vault, same supply).
+    assert_eq!(
+        factor_b, factor_a,
+        "Settlement factors should be equal without fee reservation (got fee={}, no-fee={})",
+        factor_b, factor_a
     );
 
-    // Assertion 7: Payout from Market B is less than Market A
+    // Assertion 7: Payouts should be equal since settlement factors are equal
     let payout_a = compute_payout(&market_a, &pos_a);
     let payout_b = compute_payout(&market_b, &pos_b);
-    assert!(
-        payout_b < payout_a,
-        "Fee market payout {} should be less than no-fee payout {}",
-        payout_b,
-        payout_a
+    assert_eq!(
+        payout_b, payout_a,
+        "Payouts should be equal without fee reservation (got fee={}, no-fee={})",
+        payout_b, payout_a
     );
 
     // Assertion 8: Vault solvency -- payout should not exceed vault
+    // COAL-C01: fees are no longer reserved from vault during settlement
     assert!(
         u128::from(payout_a) <= u128::from(vault_a),
         "Market A payout should not exceed vault"
     );
     assert!(
-        u128::from(payout_b) + u128::from(fees_b) <= u128::from(vault_b),
-        "Market B payout + fees should not exceed vault"
+        u128::from(payout_b) <= u128::from(vault_b),
+        "Market B payout should not exceed vault"
     );
 
     // Assertion 9: Verify fee amount using the exact on-chain formula.

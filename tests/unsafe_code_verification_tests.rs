@@ -6,16 +6,16 @@
 //! - Test cases that verify these invariants
 //! - Property-based tests for robustness
 //!
-//! Unsafe code locations after safe migration (9 remaining):
-//! - from_account_view_unchecked(): Token account parsing (8 uses) - KEPT for SPL Token performance
-//! - unsafe impl Log: Trait implementation (1 use) - KEPT for logging trait
-//!
-//! Previously unsafe patterns now using safe alternatives:
-//! - borrow_unchecked() -> try_borrow() with runtime borrow checking (was 21 uses)
-//! - borrow_unchecked_mut() -> try_borrow_mut() with runtime borrow checking (was 19 uses)
-//! - owner() -> owned_by(&Address) safe method (was 4 uses)
-//! - from_utf8_unchecked() -> safe match on from_utf8() (was 1 use)
-//! - pointer cast -> Address::new_from_array() safe constructor (was 1 use)
+//! Unsafe code patterns in the current codebase:
+//! - borrow_unchecked() / borrow_unchecked_mut(): Zero-copy account data access (all processors)
+//!   Safety: COAL-I01 scopes immutable borrows to drop before mutable borrows
+//! - from_account_view_unchecked(): SPL Token account parsing (multiple uses)
+//!   Safety: Accounts validated as token-program-owned before deserialization
+//! - owner(): Account owner reads (multiple uses)
+//!   Safety: Read-only access to account metadata
+//! - unsafe impl Log: solana_program_log trait implementation (1 use)
+//! - pointer cast in force_close_position: [u8; 32] -> &Address (1 use)
+//!   Safety: Both types have identical 32-byte layout
 
 #![allow(
     clippy::unwrap_used,

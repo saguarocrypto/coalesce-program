@@ -58,6 +58,7 @@ mod common;
 use solana_program_test::*;
 use solana_sdk::{
     instruction::InstructionError,
+    pubkey::Pubkey,
     signature::Keypair,
     signer::Signer,
     transaction::{Transaction, TransactionError},
@@ -941,7 +942,7 @@ async fn test_create_market_wrong_mint_decimals() {
     }
 
     // Create a mint with 9 decimals (wrong -- should be 6)
-    let bad_mint = common::create_mint(&mut ctx, &admin, 9).await;
+    let bad_mint = common::create_random_mint(&mut ctx, &admin, 9).await;
     let maturity_timestamp = common::FAR_FUTURE_MATURITY;
     let nonce: u64 = 1;
     let (market_pda, _) = common::get_market_pda(&borrower.pubkey(), nonce);
@@ -1170,5 +1171,102 @@ async fn test_create_market_zero_capacity() {
             .unwrap()
             .is_some(),
         "Vault account should exist after valid-capacity create_market"
+    );
+}
+
+// -----------------------------------------------------------------------
+// COAL-L01: USDC_MINT enforcement in create_market
+// -----------------------------------------------------------------------
+
+/// Verify that create_market rejects a non-USDC mint (hardcoded USDC_MINT enforced).
+#[tokio::test]
+async fn test_create_market_usdc_mint_enforced() {
+    let mut ctx = common::start_context().await;
+
+    let admin = Keypair::new();
+    let fee_authority = Keypair::new();
+    let whitelist_manager = Keypair::new();
+    let blacklist_program = Keypair::new();
+    let borrower = Keypair::new();
+
+    let airdrop_amount = 10_000_000_000u64;
+    {
+        let tx = Transaction::new_signed_with_payer(
+            &[
+                solana_sdk::system_instruction::transfer(
+                    &ctx.payer.pubkey(),
+                    &admin.pubkey(),
+                    airdrop_amount,
+                ),
+                solana_sdk::system_instruction::transfer(
+                    &ctx.payer.pubkey(),
+                    &whitelist_manager.pubkey(),
+                    airdrop_amount,
+                ),
+                solana_sdk::system_instruction::transfer(
+                    &ctx.payer.pubkey(),
+                    &borrower.pubkey(),
+                    airdrop_amount,
+                ),
+            ],
+            Some(&ctx.payer.pubkey()),
+            &[&ctx.payer],
+            ctx.last_blockhash,
+        );
+        ctx.banks_client.process_transaction(tx).await.unwrap();
+    }
+
+    // Initialize protocol
+    common::setup_protocol(
+        &mut ctx,
+        &admin,
+        &fee_authority.pubkey(),
+        &whitelist_manager.pubkey(),
+        &blacklist_program.pubkey(),
+        500,
+    )
+    .await;
+
+    // Whitelist borrower
+    let wl_ix = common::build_set_borrower_whitelist(
+        &whitelist_manager.pubkey(),
+        &borrower.pubkey(),
+        1,
+        50_000_000_000,
+    );
+    let recent = ctx.banks_client.get_latest_blockhash().await.unwrap();
+    let wl_tx = Transaction::new_signed_with_payer(
+        &[wl_ix],
+        Some(&ctx.payer.pubkey()),
+        &[&ctx.payer, &whitelist_manager],
+        recent,
+    );
+    ctx.banks_client.process_transaction(wl_tx).await.unwrap();
+
+    // Create a random 6-decimal mint (not the hardcoded USDC_MINT)
+    let non_usdc_mint = common::create_random_mint(&mut ctx, &admin, 6).await;
+
+    // Try to create a market with the non-USDC mint — should fail
+    let create_ix = common::build_create_market(
+        &borrower.pubkey(),
+        &non_usdc_mint,
+        &blacklist_program.pubkey(),
+        1,
+        800,
+        common::FAR_FUTURE_MATURITY,
+        10_000_000_000,
+    );
+    let recent2 = ctx.banks_client.get_latest_blockhash().await.unwrap();
+    let create_tx = Transaction::new_signed_with_payer(
+        &[create_ix],
+        Some(&ctx.payer.pubkey()),
+        &[&ctx.payer, &borrower],
+        recent2,
+    );
+
+    let result = ctx.banks_client.process_transaction(create_tx).await;
+    assert!(
+        result.is_err(),
+        "create_market should fail when mint is not the hardcoded USDC_MINT"
     );
 }

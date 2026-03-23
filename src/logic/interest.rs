@@ -12,6 +12,19 @@
 //!
 //! Protocol fees are computed as a fraction of each interest delta and tracked
 //! separately in `accrued_protocol_fees`.
+//!
+//! ## Compounding granularity (Finding 11)
+//!
+//! The effective APY depends on how frequently `accrue_interest` is called:
+//! - Called once per year: APY ≈ APR (no compounding benefit)
+//! - Called daily: daily compounding, APY > APR
+//! - Called every second: approaches continuous compounding
+//!
+//! This is a known property of the model, not a bug. The sub-day linear
+//! interpolation ensures that the result is independent of call frequency
+//! within a single day, but cross-day compounding depends on actual accrual
+//! cadence. In practice, any user interaction (deposit, borrow, repay, etc.)
+//! triggers accrual, so active markets compound frequently.
 
 use crate::constants::{BPS, SECONDS_PER_YEAR, WAD};
 use crate::error::LendingError;
@@ -149,9 +162,10 @@ pub fn accrue_interest(
             .ok_or(LendingError::MathOverflow)?;
 
         // fee_normalized = scaled_total_supply * scale_factor / WAD * fee_delta_wad / WAD
-        // Use new scale_factor for the fee computation (matches spec: fee computed on current supply at current scale)
+        // Use pre-accrual scale_factor: fees are a fraction of the *interest delta*,
+        // so the principal base must be valued at the scale factor before this accrual.
         let fee_normalized = scaled_total_supply
-            .checked_mul(new_scale_factor)
+            .checked_mul(scale_factor)
             .ok_or(LendingError::MathOverflow)?
             .checked_div(WAD)
             .ok_or(LendingError::MathOverflow)?
@@ -183,7 +197,7 @@ pub fn accrue_interest(
 /// lender payouts when the vault is underfunded.
 ///
 /// # Arguments
-/// * `available` - vault balance available for lenders (vault - fee reserve)
+/// * `available` - vault balance available for lenders
 /// * `total_normalized` - total deposits at current scale (scaled_supply * scale_factor / WAD)
 pub fn compute_settlement_factor(
     available: u128,
@@ -300,10 +314,11 @@ mod tests {
             return 0;
         }
 
-        let new_sf = scale_factor_after_elapsed(scale_factor_before, annual_bps, elapsed_seconds);
         let interest_delta_wad = interest_delta_wad_after_elapsed(annual_bps, elapsed_seconds);
         let fee_delta_wad = interest_delta_wad * u128::from(fee_rate_bps) / BPS_VAL;
-        let fee_normalized = scaled_supply * new_sf / WAD_VAL * fee_delta_wad / WAD_VAL;
+        // Use pre-accrual scale_factor_before (matches on-chain logic)
+        let fee_normalized =
+            scaled_supply * scale_factor_before / WAD_VAL * fee_delta_wad / WAD_VAL;
         u64::try_from(fee_normalized).unwrap()
     }
 
@@ -643,6 +658,40 @@ mod tests {
     fn test_compute_sf_available_zero() {
         let factor = compute_settlement_factor(0, 1_000_000).unwrap();
         assert_eq!(factor, 1);
+    }
+
+    // T1-22: Auditor regression — 50% APR, 5yr, 1M supply, 5% fee rate
+    // Validates pre-accrual scale factor is used for fee computation (Finding 10).
+    #[test]
+    fn test_accrue_fee_pre_accrual_scale_factor_regression() {
+        let annual_bps: u16 = 5000; // 50%
+        let fee_rate_bps: u16 = 500; // 5%
+        let five_years_seconds = 5 * 365 * 86_400i64;
+        let scaled_supply = 1_000_000_000_000u128; // 1M USDC
+        let mut market = make_market(annual_bps, i64::MAX, WAD_VAL, scaled_supply, 0, 0);
+        let config = make_config(fee_rate_bps);
+
+        accrue_interest(&mut market, &config, five_years_seconds).unwrap();
+
+        let expected_fee = fee_delta_after_elapsed(
+            scaled_supply,
+            WAD_VAL,
+            annual_bps,
+            fee_rate_bps,
+            five_years_seconds,
+        );
+        assert_eq!(market.accrued_protocol_fees(), expected_fee);
+
+        // Sanity: fees must be strictly less than total interest earned
+        let sf = market.scale_factor();
+        let total_normalized = scaled_supply * sf / WAD_VAL;
+        let interest_earned_raw = total_normalized - scaled_supply;
+        assert!(
+            u128::from(market.accrued_protocol_fees()) < interest_earned_raw,
+            "fees {} must be < total interest {}",
+            market.accrued_protocol_fees(),
+            interest_earned_raw
+        );
     }
 
     // T1-21: compute_settlement_factor with 75% recovery

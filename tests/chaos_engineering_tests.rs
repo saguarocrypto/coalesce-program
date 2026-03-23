@@ -189,7 +189,7 @@ fn oracle_scale_factor_after_step(
 
 fn oracle_fee_delta_normalized(
     scaled_total_supply: u128,
-    new_scale_factor: u128,
+    scale_factor_before: u128,
     annual_interest_bps: u16,
     last_accrual_timestamp: i64,
     maturity_timestamp: i64,
@@ -209,18 +209,22 @@ fn oracle_fee_delta_normalized(
         return 0;
     }
     let fee_delta_wad = interest_delta_wad * u128::from(fee_rate_bps) / BPS;
-    let fee_normalized = scaled_total_supply * new_scale_factor / WAD * fee_delta_wad / WAD;
+    // Use pre-accrual scale_factor_before (matches on-chain logic after Finding 10 fix)
+    let fee_normalized = scaled_total_supply * scale_factor_before / WAD * fee_delta_wad / WAD;
     u64::try_from(fee_normalized).unwrap()
 }
 
-fn oracle_settlement_factor(total_normalized: u128, vault_balance: u64, accrued_fees: u64) -> u128 {
+fn oracle_settlement_factor(
+    total_normalized: u128,
+    vault_balance: u64,
+    _accrued_fees: u64,
+) -> u128 {
     if total_normalized == 0 {
         return WAD;
     }
     let vault_u128 = u128::from(vault_balance);
-    let fees_reserved = vault_u128.min(u128::from(accrued_fees));
-    let available = vault_u128.saturating_sub(fees_reserved);
-    let raw = available * WAD / total_normalized;
+    // COAL-C01: settlement factor uses full vault balance (no fee reservation)
+    let raw = vault_u128 * WAD / total_normalized;
     raw.min(WAD).max(1)
 }
 
@@ -295,9 +299,8 @@ fn simulate_borrow(
     if accrue_interest(market, config, current_ts).is_err() {
         return false;
     }
-    let fees_reserved = (*vault_balance).min(market.accrued_protocol_fees());
-    let borrowable = vault_balance.saturating_sub(fees_reserved);
-    if amount > borrowable {
+    // COAL-L02: borrow uses full vault balance (no fee reservation)
+    if amount > *vault_balance {
         return false;
     }
     market.set_total_borrowed(market.total_borrowed().saturating_add(amount));
@@ -327,9 +330,7 @@ fn simulate_withdraw(
     // Compute settlement factor if not set
     if market.settlement_factor_wad() == 0 {
         let vault_u128 = u128::from(*vault_balance);
-        let fees_u128 = u128::from(market.accrued_protocol_fees());
-        let fees_reserved = vault_u128.min(fees_u128);
-        let available = vault_u128.saturating_sub(fees_reserved);
+        // COAL-C01: settlement factor uses full vault balance (no fee reservation)
 
         let total_normalized = market
             .scaled_total_supply()
@@ -340,7 +341,7 @@ fn simulate_withdraw(
         let sf = if total_normalized == 0 {
             WAD
         } else {
-            let raw = available
+            let raw = vault_u128
                 .checked_mul(WAD)
                 .and_then(|v| v.checked_div(total_normalized))
                 .unwrap_or(0);
@@ -390,7 +391,20 @@ fn simulate_collect_fees(
     if fees == 0 {
         return (0, false);
     }
-    let collectible = fees.min(*vault_balance);
+    let mut collectible = fees.min(*vault_balance);
+    // COAL-C01: cap fee withdrawal above lender claims when supply > 0
+    if market.scaled_total_supply() > 0 {
+        let sf = market.scale_factor();
+        let total_norm = market
+            .scaled_total_supply()
+            .checked_mul(sf)
+            .unwrap()
+            .checked_div(WAD)
+            .unwrap();
+        let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
+        let safe_max = vault_balance.saturating_sub(lender_claims);
+        collectible = collectible.min(safe_max);
+    }
     if collectible == 0 {
         return (0, false);
     }
@@ -567,7 +581,7 @@ fn chaos_reorder_multiple_accruals_same_timestamp_idempotent() {
     let expected_sf = oracle_scale_factor_after_step(WAD, annual_bps, start, i64::MAX, target);
     let expected_fee = oracle_fee_delta_normalized(
         supply,
-        expected_sf,
+        WAD, // pre-accrual scale factor (Finding 10)
         annual_bps,
         start,
         i64::MAX,
@@ -596,7 +610,7 @@ fn chaos_reorder_multiple_accruals_same_timestamp_idempotent() {
         oracle_scale_factor_after_step(expected_sf, annual_bps, target, i64::MAX, next);
     let expected_fee_next = oracle_fee_delta_normalized(
         supply,
-        expected_sf_next,
+        expected_sf, // pre-accrual scale factor for this step (Finding 10)
         annual_bps,
         target,
         i64::MAX,
@@ -769,7 +783,7 @@ fn chaos_duplicate_accrual_idempotent() {
     let expected_sf = oracle_scale_factor_after_step(WAD, annual_bps, start, i64::MAX, ts);
     let expected_fee = oracle_fee_delta_normalized(
         supply,
-        expected_sf,
+        WAD, // pre-accrual scale factor (Finding 10)
         annual_bps,
         start,
         i64::MAX,
@@ -797,7 +811,7 @@ fn chaos_duplicate_accrual_idempotent() {
         oracle_scale_factor_after_step(expected_sf, annual_bps, ts, i64::MAX, next);
     let expected_fee_next = oracle_fee_delta_normalized(
         supply,
-        expected_sf_next,
+        expected_sf, // pre-accrual scale factor for this step (Finding 10)
         annual_bps,
         ts,
         i64::MAX,
@@ -1197,7 +1211,7 @@ fn chaos_concurrent_collect_fees_and_borrow() {
     let expected_sf = oracle_scale_factor_after_step(WAD, annual_bps, 0, maturity, accrual_ts);
     let expected_fee_delta = oracle_fee_delta_normalized(
         market.scaled_total_supply(),
-        expected_sf,
+        WAD, // pre-accrual scale factor (Finding 10)
         annual_bps,
         0,
         maturity,
@@ -1209,56 +1223,20 @@ fn chaos_concurrent_collect_fees_and_borrow() {
     assert_eq!(market.accrued_protocol_fees(), expected_fee_delta);
     assert_eq!(market.last_accrual_timestamp(), accrual_ts);
 
-    let fees_reserved = vault.min(market.accrued_protocol_fees());
-    let borrowable = vault.saturating_sub(fees_reserved);
-    assert!(
-        fees_reserved > 0,
-        "fees should reserve part of vault liquidity"
-    );
-    assert!(borrowable < vault, "borrowable must exclude reserved fees");
+    // COAL-L02: borrow uses full vault balance (no fee reservation)
+    let borrowable = vault;
 
-    // Full-vault borrow must fail and leave state unchanged.
-    let snap_before_overborrow = snapshot(&market);
-    let vault_before_overborrow = vault;
-    let full_borrow_ok = simulate_borrow(
-        &mut market,
-        &config,
-        vault_before_overborrow,
-        accrual_ts,
-        &mut vault,
-    );
-    assert!(
-        !full_borrow_ok,
-        "full-vault borrow should fail due fee reservation"
-    );
-    assert_eq!(snapshot(&market), snap_before_overborrow);
-    assert_eq!(vault, vault_before_overborrow);
-
-    // Borrowing exactly the borrowable amount must succeed.
+    // Borrowing exactly the full vault amount must succeed.
     let exact_borrow_ok = simulate_borrow(&mut market, &config, borrowable, accrual_ts, &mut vault);
     assert!(
         exact_borrow_ok,
-        "borrowing exactly borrowable amount should succeed"
+        "borrowing full vault balance should succeed"
     );
     assert_eq!(market.total_borrowed(), borrowable);
     assert_eq!(market.accrued_protocol_fees(), expected_fee_delta);
     assert_eq!(
-        vault, fees_reserved,
-        "remaining vault should equal reserved fees"
-    );
-
-    // Collecting fees after borrow should drain remaining reserved liquidity.
-    let (collected, collect_ok) =
-        simulate_collect_fees(&mut market, &config, accrual_ts, &mut vault);
-    assert!(collect_ok, "reserved fees should be collectible");
-    assert_eq!(collected, fees_reserved);
-    assert_eq!(
-        market.accrued_protocol_fees(),
-        expected_fee_delta.saturating_sub(collected)
-    );
-    assert_eq!(
         vault, 0,
-        "collecting reserved fees should drain residual vault"
+        "vault should be fully drained after borrowing entire balance"
     );
     assert_supply_matches_lenders(&market, &[lender]);
 }
@@ -1328,7 +1306,8 @@ fn chaos_concurrent_two_lenders_withdraw_proportional() {
     assert_eq!(expected_payout_a, 750_000);
     assert_eq!(expected_payout_b, 2_250_000);
 
-    let available_for_lenders = vault.saturating_sub(vault.min(market.accrued_protocol_fees()));
+    // COAL-C01: no fee reservation; full vault is available for lenders
+    let available_for_lenders = vault;
 
     // Both lenders withdraw
     let (payout_a, ok_a) =
@@ -1680,8 +1659,8 @@ fn chaos_recovery_rapid_fire_100_ops_no_drift() {
         let pre_snap = snapshot(&market);
         let pre_lender = lender.scaled_balance();
         let pre_vault = vault;
-        let pre_borrowable =
-            pre_vault.saturating_sub(pre_vault.min(pre_snap.accrued_protocol_fees));
+        // COAL-L02: no fee reservation; full vault is borrowable
+        let pre_borrowable = pre_vault;
 
         let expected_sf_after_accrual = oracle_scale_factor_after_step(
             pre_snap.scale_factor,
@@ -1692,7 +1671,7 @@ fn chaos_recovery_rapid_fire_100_ops_no_drift() {
         );
         let expected_fee_delta = oracle_fee_delta_normalized(
             pre_snap.scaled_total_supply,
-            expected_sf_after_accrual,
+            pre_snap.scale_factor, // pre-accrual scale factor (Finding 10)
             annual_bps,
             pre_snap.last_accrual_timestamp,
             maturity,
@@ -1744,8 +1723,8 @@ fn chaos_recovery_rapid_fire_100_ops_no_drift() {
             2 => {
                 // Only borrow if there are funds
                 if pre_borrowable >= 500 {
-                    let post_accrual_borrowable =
-                        pre_vault.saturating_sub(pre_vault.min(expected_fees_after_accrual));
+                    // COAL-L02: no fee reservation; full vault is borrowable
+                    let post_accrual_borrowable = pre_vault;
                     let should_succeed = post_accrual_borrowable >= 500;
                     let ok = simulate_borrow(&mut market, &config, 500, ts, &mut vault);
                     assert_eq!(
@@ -2124,9 +2103,10 @@ fn chaos_extreme_fee_near_u64_max() {
     let interest_delta_wad = oracle_interest_delta_wad(annual_bps, 0, i64::MAX, one_year);
     let fee_delta_wad = interest_delta_wad * u128::from(MAX_FEE_RATE_BPS) / BPS;
 
+    // Use pre-accrual scale factor (WAD) for fee computation (Finding 10)
     let fee_for_supply = |supply: u128| -> Option<u128> {
         supply
-            .checked_mul(new_sf)?
+            .checked_mul(WAD)?
             .checked_div(WAD)?
             .checked_mul(fee_delta_wad)?
             .checked_div(WAD)
@@ -2233,8 +2213,8 @@ fn chaos_stress_interleaved_many_actors_close_timestamps() {
         let pre_snap = snapshot(&market);
         let pre_vault = vault;
         let pre_balances = lenders.map(|l| l.scaled_balance());
-        let pre_borrowable =
-            pre_vault.saturating_sub(pre_vault.min(pre_snap.accrued_protocol_fees));
+        // COAL-L02: no fee reservation; full vault is borrowable
+        let pre_borrowable = pre_vault;
 
         let expected_sf_after_accrual = oracle_scale_factor_after_step(
             pre_snap.scale_factor,
@@ -2245,7 +2225,7 @@ fn chaos_stress_interleaved_many_actors_close_timestamps() {
         );
         let expected_fee_delta = oracle_fee_delta_normalized(
             pre_snap.scaled_total_supply,
-            expected_sf_after_accrual,
+            pre_snap.scale_factor, // pre-accrual scale factor (Finding 10)
             annual_bps,
             pre_snap.last_accrual_timestamp,
             maturity,
@@ -2298,8 +2278,8 @@ fn chaos_stress_interleaved_many_actors_close_timestamps() {
         } else {
             // Odd: try to borrow
             if pre_borrowable >= 5_000 {
-                let post_accrual_borrowable =
-                    pre_vault.saturating_sub(pre_vault.min(expected_fees_after_accrual));
+                // COAL-L02: no fee reservation; full vault is borrowable
+                let post_accrual_borrowable = pre_vault;
                 let should_succeed = post_accrual_borrowable >= 5_000;
                 let ok = simulate_borrow(&mut market, &config, 5_000, ts, &mut vault);
                 assert_eq!(ok, should_succeed, "step {}: borrow outcome mismatch", i);

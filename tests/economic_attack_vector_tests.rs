@@ -246,11 +246,8 @@ impl ProtocolModel {
         accrue_interest(&mut self.market, &self.config, self.current_timestamp)
             .map_err(|e| format!("Accrue failed: {:?}", e))?;
 
-        let fees_reserved = std::cmp::min(self.vault_balance, self.market.accrued_protocol_fees());
-        let borrowable = self
-            .vault_balance
-            .checked_sub(fees_reserved)
-            .ok_or("MathOverflow")?;
+        // COAL-L02: no fee reservation, full vault is borrowable
+        let borrowable = self.vault_balance;
 
         if amount > borrowable {
             return Err("BorrowAmountTooHigh".into());
@@ -386,10 +383,8 @@ impl ProtocolModel {
     }
 
     fn settle_market(&mut self) {
-        let vault_balance_u128 = u128::from(self.vault_balance);
-        let fees = u128::from(self.market.accrued_protocol_fees());
-        let fees_reserved = std::cmp::min(vault_balance_u128, fees);
-        let available = vault_balance_u128.saturating_sub(fees_reserved);
+        // COAL-C01: no fee reservation, full vault is available for lenders
+        let available = u128::from(self.vault_balance);
 
         let total_normalized = self
             .market
@@ -448,10 +443,8 @@ impl ProtocolModel {
         accrue_interest(&mut self.market, &self.config, self.current_timestamp)
             .map_err(|e| format!("Accrue failed: {:?}", e))?;
 
-        let vault_balance_u128 = u128::from(self.vault_balance);
-        let fees = u128::from(self.market.accrued_protocol_fees());
-        let fees_reserved = std::cmp::min(vault_balance_u128, fees);
-        let available = vault_balance_u128.saturating_sub(fees_reserved);
+        // COAL-C01: no fee reservation, full vault is available for lenders
+        let available = u128::from(self.vault_balance);
 
         let total_normalized = self
             .market
@@ -524,9 +517,9 @@ fn compute_payout(scaled: u128, sf: u128, settlement: u128) -> u128 {
 }
 
 /// Compute settlement factor: clamp(available * WAD / total_normalized, 1, WAD).
-fn compute_settlement(vault: u128, fees: u128, scaled_supply: u128, sf: u128) -> u128 {
-    let fees_reserved = std::cmp::min(vault, fees);
-    let available = vault.saturating_sub(fees_reserved);
+/// COAL-C01: no fee reservation, full vault is available for lenders.
+fn compute_settlement(vault: u128, scaled_supply: u128, sf: u128) -> u128 {
+    let available = vault;
     let total_normalized = scaled_supply.checked_mul(sf).unwrap_or(0) / WAD;
     if total_normalized == 0 {
         return WAD;
@@ -956,7 +949,6 @@ proptest! {
 
         let expected_settlement = compute_settlement(
             u128::from(model.vault_balance),
-            u128::from(model.market.accrued_protocol_fees()),
             model.market.scaled_total_supply(),
             model.market.scale_factor(),
         );
@@ -1099,22 +1091,21 @@ proptest! {
     #[test]
     fn attack_proptest_settlement_bounds_always_hold(
         vault in 0u64..10_000_000u64,
-        fees in 0u64..1_000_000u64,
         supply in 1u128..1_000_000_000_000u128,
         sf_offset in 0u64..1_000_000_000u64,
         vault_boost in 0u64..5_000_000u64,
     ) {
         let sf = WAD + u128::from(sf_offset);
+        // COAL-C01: no fee reservation, full vault is available for lenders
         let settlement = compute_settlement(
             u128::from(vault),
-            u128::from(fees),
             supply,
             sf,
         );
         prop_assert!(settlement >= 1, "Settlement below 1: {}", settlement);
         prop_assert!(settlement <= WAD, "Settlement above WAD: {}", settlement);
 
-        let available = u128::from(vault).saturating_sub(u128::from(fees));
+        let available = u128::from(vault);
         let total_normalized = supply.saturating_mul(sf) / WAD;
         let expected = if total_normalized == 0 {
             WAD
@@ -1131,16 +1122,14 @@ proptest! {
         prop_assert_eq!(
             settlement,
             expected,
-            "Settlement formula mismatch: vault={}, fees={}, supply={}, sf={}",
+            "Settlement formula mismatch: vault={}, supply={}, sf={}",
             vault,
-            fees,
             supply,
             sf
         );
 
         let settlement_boosted = compute_settlement(
             u128::from(vault).saturating_add(u128::from(vault_boost)),
-            u128::from(fees),
             supply,
             sf,
         );
@@ -1150,14 +1139,6 @@ proptest! {
             settlement,
             settlement_boosted
         );
-
-        if vault <= fees {
-            prop_assert_eq!(
-                settlement,
-                1,
-                "When fees fully reserve vault, settlement must clamp to 1"
-            );
-        }
     }
 }
 
@@ -1307,11 +1288,11 @@ fn attack_fee_many_small_vs_one_large() {
     );
 
     // Path dependence is expected under floor division and per-step fee accrual.
-    // For this fixed scenario, many small steps should not charge more total fees
-    // than a single one-year accrual.
+    // After Finding 10 (pre-accrual SF), multi-step accrual uses progressively
+    // larger scale factors as input, so multi_fees >= single_fees is expected.
     assert!(
-        multi_fees <= single_fees,
-        "Unexpected fee ordering: multi-step fees {} should be <= single-step fees {}",
+        multi_fees >= single_fees,
+        "Unexpected fee ordering: multi-step fees {} should be >= single-step fees {}",
         multi_fees,
         single_fees
     );
@@ -1363,8 +1344,9 @@ fn attack_fee_overflow_u64_boundary() {
             );
             let interest_delta_wad =
                 compute_interest_delta(u128::from(annual_bps), total_time as u128);
+            // Use pre-accrual SF (WAD) for interest bound check (Finding 10)
             let interest_on_supply = scaled_supply
-                .checked_mul(market.scale_factor())
+                .checked_mul(WAD)
                 .unwrap_or(u128::MAX)
                 .checked_div(WAD)
                 .unwrap_or(u128::MAX)
@@ -1438,11 +1420,12 @@ proptest! {
                     .checked_mul(u128::from(fee_rate_bps))
                     .unwrap_or(u128::MAX)
                     / BPS;
+                // Use pre-accrual scale factor (WAD) for fee computation (Finding 10)
                 let expected_fee = supply
-                    .checked_mul(new_sf).unwrap_or(u128::MAX) / WAD
+                    .checked_mul(WAD).unwrap_or(u128::MAX) / WAD
                     * fee_delta_wad / WAD;
                 let interest_on_supply = supply
-                    .checked_mul(new_sf).unwrap_or(u128::MAX) / WAD
+                    .checked_mul(WAD).unwrap_or(u128::MAX) / WAD
                     * interest_delta_wad / WAD;
 
                 prop_assert_eq!(
@@ -1734,10 +1717,8 @@ fn attack_deposit_borrow_repay_withdraw() {
             // Attacker deposits
             model.deposit(0, deposit).unwrap();
 
-            // Attacker borrows max possible
-            let fees_reserved =
-                std::cmp::min(model.vault_balance, model.market.accrued_protocol_fees());
-            let borrowable = model.vault_balance.saturating_sub(fees_reserved);
+            // Attacker borrows max possible (COAL-L02: full vault is borrowable)
+            let borrowable = model.vault_balance;
             if borrowable > 0 {
                 model.borrow(borrowable).unwrap();
             }
@@ -1786,9 +1767,8 @@ proptest! {
         // Large deposit
         model.deposit(0, deposit).unwrap();
 
-        // Max borrow
-        let fees_reserved = std::cmp::min(model.vault_balance, model.market.accrued_protocol_fees());
-        let borrowable = model.vault_balance.saturating_sub(fees_reserved);
+        // Max borrow (COAL-L02: full vault is borrowable)
+        let borrowable = model.vault_balance;
         if borrowable > 0 {
             model.borrow(borrowable).unwrap();
         }

@@ -136,14 +136,14 @@ fn scale_factor_after_exact(scale_factor: u128, annual_bps: u16, elapsed_seconds
 
 fn fee_delta_exact(
     scaled_total_supply: u128,
-    new_scale_factor: u128,
+    scale_factor_before: u128,
     annual_bps: u16,
     fee_rate_bps: u16,
     elapsed_seconds: i64,
 ) -> u64 {
     interest_oracle::fee_delta_exact(
         scaled_total_supply,
-        new_scale_factor,
+        scale_factor_before,
         annual_bps,
         fee_rate_bps,
         elapsed_seconds,
@@ -307,7 +307,7 @@ fn clock_jump_to_maturity_equals_gradual() {
     let mut market_single = make_market(1000, maturity, WAD, supply, 0, 0);
     accrue_interest(&mut market_single, &config, maturity).unwrap();
     let expected_single_sf = scale_factor_after_exact(WAD, 1000, maturity);
-    let expected_single_fees = fee_delta_exact(supply, expected_single_sf, 1000, 500, maturity);
+    let expected_single_fees = fee_delta_exact(supply, WAD, 1000, 500, maturity);
     assert_eq!(market_single.scale_factor(), expected_single_sf);
     assert_eq!(market_single.accrued_protocol_fees(), expected_single_fees);
 
@@ -322,26 +322,22 @@ fn clock_jump_to_maturity_equals_gradual() {
         let ts = d * one_day;
         accrue_interest(&mut market_gradual, &config, ts).unwrap();
         let elapsed = ts - expected_last;
+        let sf_before = expected_gradual_sf;
         expected_gradual_sf = scale_factor_after_exact(expected_gradual_sf, 1000, elapsed);
         expected_gradual_fees = expected_gradual_fees
-            .checked_add(fee_delta_exact(
-                supply,
-                expected_gradual_sf,
-                1000,
-                500,
-                elapsed,
-            ))
+            .checked_add(fee_delta_exact(supply, sf_before, 1000, 500, elapsed))
             .expect("expected fees overflow");
         expected_last = ts;
     }
     // Final step to exact maturity (handles remainder)
     accrue_interest(&mut market_gradual, &config, maturity).unwrap();
     let elapsed_tail = maturity - expected_last;
+    let sf_before_tail = expected_gradual_sf;
     expected_gradual_sf = scale_factor_after_exact(expected_gradual_sf, 1000, elapsed_tail);
     expected_gradual_fees = expected_gradual_fees
         .checked_add(fee_delta_exact(
             supply,
-            expected_gradual_sf,
+            sf_before_tail,
             1000,
             500,
             elapsed_tail,
@@ -424,7 +420,7 @@ fn multiple_accruals_same_timestamp_idempotent() {
     accrue_interest(&mut market, &config, ts).unwrap();
     let snap_after_first = snapshot(&market);
     let expected_sf = scale_factor_after_exact(WAD, 1000, ts - start);
-    let expected_fees = fee_delta_exact(supply, expected_sf, 1000, 500, ts - start);
+    let expected_fees = fee_delta_exact(supply, WAD, 1000, 500, ts - start);
     assert_eq!(snap_after_first.scale_factor, expected_sf);
     assert_eq!(snap_after_first.accrued_protocol_fees, expected_fees);
 

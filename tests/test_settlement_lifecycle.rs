@@ -62,7 +62,10 @@
 mod common;
 
 use common::*;
-use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer, transaction::Transaction};
+use solana_sdk::{
+    instruction::Instruction, pubkey::Pubkey, signature::Keypair, signer::Signer,
+    transaction::Transaction,
+};
 
 const MATURITY_OFFSET: i64 = 365 * 24 * 60 * 60;
 const WAD: u128 = 1_000_000_000_000_000_000;
@@ -214,7 +217,12 @@ async fn test_full_lifecycle_creation_to_excess_withdrawal() {
 
     // 7. Withdraw excess — must succeed because the borrower overpaid via repay_interest
     // (50M extra tokens in vault beyond what lender + fees consumed)
-    let we = build_withdraw_excess(&s.market, &s.borrower.pubkey(), &s.borrower_ta);
+    let we = build_withdraw_excess(
+        &s.market,
+        &s.borrower.pubkey(),
+        &s.borrower_ta,
+        &s.blacklist_program,
+    );
     send_ok(&mut ctx, we, &[&s.borrower]).await;
 }
 
@@ -447,24 +455,38 @@ async fn test_re_settle_monotonically_increases() {
     let mdata_1 = get_account_data(&mut ctx, &s.market).await;
     let sf_1 = parse_market(&mdata_1).settlement_factor_wad;
 
-    // Successive repayments and re-settles
+    // Successive repayments and re-settles.
+    // Use distinct repay amounts so each transaction has a unique signature
+    // (identical data + stale blockhash = duplicate-tx detection in BanksClient).
+    // The re_settle instruction also gets a nonce byte appended (the program
+    // ignores extra data after the discriminator).
     let mut prev_sf = sf_1;
-    for repay_amount in [15_000_000u64, 15_000_000, 15_000_000] {
+    let (vault, _) = get_vault_pda(&s.market);
+    let (protocol_config, _) = get_protocol_config_pda();
+    for (i, repay_amount) in [15_000_000u64, 15_000_001, 15_000_002].iter().enumerate() {
         let repay = build_repay(
             &s.market,
             &s.borrower.pubkey(),
             &s.borrower_ta,
             &s.mint,
             &s.borrower.pubkey(),
-            repay_amount,
+            *repay_amount,
         );
         send_ok(&mut ctx, repay, &[&s.borrower]).await;
 
-        // Advance further past grace period for re_settle
         advance_clock_past(&mut ctx, parsed.maturity_timestamp + 602).await;
 
-        let (vault, _) = get_vault_pda(&s.market);
-        let rs = build_re_settle(&s.market, &vault);
+        let (haircut_state, _) = get_haircut_state_pda(&s.market);
+        let rs = Instruction {
+            program_id: program_id(),
+            accounts: vec![
+                solana_sdk::instruction::AccountMeta::new(s.market, false),
+                solana_sdk::instruction::AccountMeta::new_readonly(vault, false),
+                solana_sdk::instruction::AccountMeta::new_readonly(protocol_config, false),
+                solana_sdk::instruction::AccountMeta::new_readonly(haircut_state, false),
+            ],
+            data: vec![9u8, i as u8], // disc + nonce to avoid duplicate tx signatures
+        };
         send_ok(&mut ctx, rs, &[]).await;
 
         let mdata = get_account_data(&mut ctx, &s.market).await;
@@ -704,7 +726,9 @@ async fn test_exact_maturity_boundary_operations() {
     );
     send_ok(&mut ctx, dep2, &[&s.lender]).await;
 
-    // At maturity: deposit should fail with MarketMatured (28)
+    // At maturity: deposit should fail with MarketMatured (28).
+    // Use a different amount (2M vs 1M) so the tx signature differs from dep2
+    // (same data + stale blockhash = duplicate-tx detection in BanksClient).
     get_blockhash_pinned(&mut ctx, maturity).await;
     let dep3 = build_deposit(
         &s.market,
@@ -712,7 +736,7 @@ async fn test_exact_maturity_boundary_operations() {
         &s.lender_ta,
         &s.mint,
         &s.blacklist_program,
-        1_000_000,
+        2_000_000,
     );
     // Program uses `current_ts >= maturity` (SR-031), so deposit at exact maturity must fail
     let tx = Transaction::new_signed_with_payer(

@@ -177,15 +177,15 @@ fn expected_fee_delta_single_step(
     }
 
     let growth_wad = math_oracle::growth_factor_wad(annual_bps, elapsed_seconds);
-    let new_scale_factor = math_oracle::mul_wad(scale_factor_before, growth_wad);
     let interest_delta_wad = growth_wad.checked_sub(WAD).unwrap();
     let fee_delta_wad = interest_delta_wad
         .checked_mul(u128::from(fee_rate_bps))
         .unwrap()
         .checked_div(BPS)
         .unwrap();
+    // Use pre-accrual scale_factor_before (Finding 10 fix)
     let fee_normalized = scaled_total_supply
-        .checked_mul(new_scale_factor)
+        .checked_mul(scale_factor_before)
         .unwrap()
         .checked_div(WAD)
         .unwrap()
@@ -987,49 +987,30 @@ fn resettle_zero_supply_after_settlement() {
 // Section 11: Borrow math -- fee reservation and borrowable
 // ===========================================================================
 
-/// Fee reservation: borrowable = vault_balance - min(vault_balance, accrued_fees)
+/// After COAL-L02: borrowable = vault_balance directly (no fee reservation).
 #[test]
 fn borrow_fee_reservation_all_fees() {
     let vault_balance: u64 = 1_000_000;
-    let accrued_fees: u64 = 500_000;
+    let borrowable = vault_balance;
 
-    let fees_reserved = core::cmp::min(vault_balance, accrued_fees);
-    let borrowable = vault_balance.checked_sub(fees_reserved).unwrap();
-
-    assert_eq!(fees_reserved, 500_000);
-    assert_eq!(borrowable, 500_000);
-    assert_eq!(fees_reserved + borrowable, vault_balance);
+    assert_eq!(borrowable, vault_balance);
 }
 
-/// Fee reservation: when fees > vault_balance, all vault is reserved
+/// After COAL-L02: borrowable = vault_balance directly, regardless of fees.
 #[test]
 fn borrow_fee_reservation_fees_exceed_vault() {
     let vault_balance: u64 = 100_000;
-    let accrued_fees: u64 = 500_000;
+    let borrowable = vault_balance;
 
-    let fees_reserved = core::cmp::min(vault_balance, accrued_fees);
-    let borrowable = vault_balance.checked_sub(fees_reserved).unwrap();
-
-    assert_eq!(fees_reserved, 100_000);
-    assert_eq!(borrowable, 0, "all vault is reserved for fees");
-    assert_eq!(fees_reserved + borrowable, vault_balance);
-    assert_eq!(core::cmp::min(vault_balance, vault_balance), vault_balance);
+    assert_eq!(borrowable, vault_balance);
 }
 
-/// Fee reservation: when fees == 0, full vault is borrowable
+/// After COAL-L02: borrowable = vault_balance directly, regardless of fee level.
 #[test]
 fn borrow_fee_reservation_no_fees() {
     let vault_balance: u64 = 1_000_000;
-    for fees in [0u64, 1] {
-        let fees_reserved = core::cmp::min(vault_balance, fees);
-        let borrowable = vault_balance.checked_sub(fees_reserved).unwrap();
-        assert_eq!(fees_reserved + borrowable, vault_balance);
-        if fees == 0 {
-            assert_eq!(borrowable, vault_balance);
-        } else {
-            assert_eq!(borrowable, vault_balance - 1);
-        }
-    }
+    let borrowable = vault_balance;
+    assert_eq!(borrowable, vault_balance);
 }
 
 /// Global capacity check: current_borrowed + amount > max_borrow_capacity
@@ -1598,7 +1579,8 @@ fn fee_exact_value_10pct_50fee() {
 
     assert_eq!(market.accrued_protocol_fees(), expected_fee);
     assert!(expected_fee > 0);
-    assert!(expected_fee > 55_000_000_000);
+    // With Finding 10 fix (pre-accrual SF), fee is ~52.5B not ~58B
+    assert!(expected_fee > 50_000_000_000);
 
     let mut lower_fee_market = make_market(annual_bps, i64::MAX, WAD, supply, 0, 0);
     accrue_interest(
@@ -1789,12 +1771,9 @@ fn full_lifecycle_math_simulation() {
     market.set_total_repaid(repay_amount);
 
     // Simulate settlement
+    // After COAL-C01: no fee reservation; available = vault_balance directly
     let vault_balance = u128::from(deposit_amount - borrow_amount + repay_amount); // 1M - 500K + 600K = 1.1M
-    let fees = u128::from(market.accrued_protocol_fees());
-    let fees_reserved = fees.min(vault_balance);
-    let available = vault_balance - fees_reserved;
-    assert!(fees_reserved <= fees);
-    assert!(fees_reserved <= vault_balance);
+    let available = vault_balance;
 
     let total_normalized = normalize(market.scaled_total_supply(), sf_maturity).unwrap();
     assert!(total_normalized > 0);
@@ -1814,7 +1793,7 @@ fn full_lifecycle_math_simulation() {
         payout,
         available
     );
-    assert!(payout + fees_reserved <= vault_balance);
+    assert!(payout <= vault_balance);
     assert_eq!(market.total_deposited(), deposit_amount);
     assert_eq!(market.total_borrowed(), borrow_amount);
     assert_eq!(market.total_repaid(), repay_amount);

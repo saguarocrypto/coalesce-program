@@ -96,7 +96,7 @@ fn expected_scale_factor(
 
 fn expected_fee_delta(
     scaled_total_supply: u128,
-    new_scale_factor: u128,
+    scale_factor_before: u128,
     annual_interest_bps: u16,
     fee_rate_bps: u16,
     elapsed_seconds: i64,
@@ -114,8 +114,9 @@ fn expected_fee_delta(
     let fee_delta_wad = interest_delta_wad
         .checked_mul(u128::from(fee_rate_bps))?
         .checked_div(BPS)?;
+    // Use pre-accrual scale_factor_before (matches on-chain Finding 10 fix)
     let fee_normalized = scaled_total_supply
-        .checked_mul(new_scale_factor)?
+        .checked_mul(scale_factor_before)?
         .checked_div(WAD)?
         .checked_mul(fee_delta_wad)?
         .checked_div(WAD)?;
@@ -192,7 +193,7 @@ fn stress_interest_accrual_large_supply() {
             );
             let expected_fee = expected_fee_delta(
                 max_safe_supply,
-                expected_sf,
+                WAD,
                 10_000,
                 10_000,
                 SECONDS_PER_YEAR as i64,
@@ -281,7 +282,7 @@ fn stress_interest_compound_on_large_scale_factor() {
                 "sf must match daily-compound oracle after 100% on 10x"
             );
             let expected_fee =
-                expected_fee_delta(supply, expected_sf, 10_000, 5000, SECONDS_PER_YEAR as i64)
+                expected_fee_delta(supply, big_sf, 10_000, 5000, SECONDS_PER_YEAR as i64)
                     .expect("expected fee should fit");
             assert_eq!(
                 market.accrued_protocol_fees(),
@@ -500,9 +501,8 @@ fn stress_fee_max_rates() {
         expected_sf
     );
 
-    let expected_fee =
-        expected_fee_delta(supply, expected_sf, 10_000, 10_000, SECONDS_PER_YEAR as i64)
-            .expect("expected fee should fit");
+    let expected_fee = expected_fee_delta(supply, WAD, 10_000, 10_000, SECONDS_PER_YEAR as i64)
+        .expect("expected fee should fit");
     assert_eq!(
         market.accrued_protocol_fees(),
         expected_fee,
@@ -680,7 +680,7 @@ fn stress_full_lifecycle_large_amounts() {
         expected_sf
     );
 
-    let expected_fee = expected_fee_delta(supply, expected_sf, 5000, 5000, SECONDS_PER_YEAR as i64)
+    let expected_fee = expected_fee_delta(supply, WAD, 5000, 5000, SECONDS_PER_YEAR as i64)
         .expect("expected fee should fit");
     assert_eq!(
         market.accrued_protocol_fees(),
@@ -689,23 +689,8 @@ fn stress_full_lifecycle_large_amounts() {
         expected_fee
     );
 
-    // Simulate settlement
+    // Simulate settlement (uses full vault balance, no fee reservation)
     let vault_balance = 80_000_000_000_000u128; // 80M left (some borrowed)
-    let fees = u128::from(market.accrued_protocol_fees());
-    let fees_reserved = fees.min(vault_balance);
-    let available = vault_balance - fees_reserved;
-
-    // Pin exact intermediate values
-    assert_eq!(
-        fees_reserved,
-        u128::from(expected_fee),
-        "fees_reserved must equal accrued fees"
-    );
-    let expected_available = vault_balance - u128::from(expected_fee);
-    assert_eq!(
-        available, expected_available,
-        "available must be vault - fees"
-    );
 
     let total_normalized = supply * market.scale_factor() / WAD;
     let expected_total_norm = supply * expected_sf / WAD;
@@ -715,20 +700,20 @@ fn stress_full_lifecycle_large_amounts() {
         expected_total_norm
     );
 
-    let raw_factor = available * WAD / total_normalized;
+    let raw_factor = vault_balance * WAD / total_normalized;
     let settlement = raw_factor.min(WAD).max(1);
 
     // Settlement factor should be < WAD (underfunded)
     assert!(settlement < WAD, "should be underfunded");
     assert!(settlement > 0, "should have non-zero settlement");
 
-    // Conservation check: total payout across all lenders must not exceed available
+    // Conservation check: total payout across all lenders must not exceed vault
     let total_payout = total_normalized * settlement / WAD;
     assert!(
-        total_payout <= available,
-        "total payout {} must not exceed available {}",
+        total_payout <= vault_balance,
+        "total payout {} must not exceed vault balance {}",
         total_payout,
-        available
+        vault_balance
     );
 
     // Verify individual lender payout

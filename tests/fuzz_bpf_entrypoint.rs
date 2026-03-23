@@ -387,6 +387,7 @@ async fn test_bpf_corrupted_payloads_no_crash() {
             &[
                 InstructionError::InvalidInstructionData,
                 InstructionError::Custom(15), // InvalidTokenProgram on mismatched account layouts
+                InstructionError::NotEnoughAccountKeys, // Account count mismatch (e.g., create_market needs 11)
             ],
         );
 

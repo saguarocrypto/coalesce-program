@@ -3,15 +3,16 @@ use pinocchio::{AccountView, Address, ProgramResult};
 use solana_program_log::log;
 
 use crate::constants::{
-    DISC_MARKET, DISC_PROTOCOL_CONFIG, SEED_MARKET_AUTHORITY, SEED_PROTOCOL_CONFIG, WAD,
+    DISC_BORROWER_WL, DISC_MARKET, DISC_PROTOCOL_CONFIG, SEED_BORROWER_WHITELIST,
+    SEED_MARKET_AUTHORITY, SEED_PROTOCOL_CONFIG, WAD,
 };
 use crate::error::LendingError;
 use crate::logic::validation::{
-    get_unix_timestamp, validate_market_authority, validate_market_pda,
+    check_blacklist, get_unix_timestamp, validate_market_authority, validate_market_pda,
 };
-use crate::state::{Market, ProtocolConfig};
+use crate::state::{BorrowerWhitelist, Market, ProtocolConfig};
 
-/// WithdrawExcess (disc 18)
+/// WithdrawExcess (disc 11)
 /// Allows the borrower to withdraw excess funds from the vault after:
 /// - Market has matured
 /// - All lenders have fully withdrawn (scaled_total_supply == 0)
@@ -20,7 +21,7 @@ use crate::state::{Market, ProtocolConfig};
 ///
 /// This prevents loss of funds when borrower overpays interest.
 pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> ProgramResult {
-    if accounts.len() < 7 {
+    if accounts.len() < 9 {
         return Err(ProgramError::NotEnoughAccountKeys);
     }
     let market_account = &accounts[0];
@@ -30,6 +31,8 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
     let market_authority = &accounts[4];
     let token_program = &accounts[5];
     let protocol_config_account = &accounts[6];
+    let blacklist_check = &accounts[7];
+    let borrower_whitelist_account = &accounts[8];
 
     // Validate token program
     if token_program.address() != &pinocchio_token::ID {
@@ -90,6 +93,31 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
         return Err(LendingError::Unauthorized.into());
     }
 
+    // Blacklist check for borrower (Finding 8: was missing from withdraw_excess)
+    check_blacklist(blacklist_check, config, borrower.address())?;
+
+    // Whitelist check for borrower (COAL-H03 follow-up: verify borrower is still whitelisted)
+    let (expected_wl_pda, _) = Address::find_program_address(
+        &[SEED_BORROWER_WHITELIST, borrower.address().as_ref()],
+        program_id,
+    );
+    if borrower_whitelist_account.address() != &expected_wl_pda {
+        return Err(LendingError::InvalidPDA.into());
+    }
+    if !borrower_whitelist_account.owned_by(program_id) {
+        return Err(LendingError::InvalidAccountOwner.into());
+    }
+    // SAFETY: Read-only borrow. Account data length is verified by bytemuck::try_from_bytes.
+    let wl_data = unsafe { borrower_whitelist_account.borrow_unchecked() };
+    let wl: &BorrowerWhitelist =
+        bytemuck::try_from_bytes(wl_data).map_err(|_| ProgramError::InvalidAccountData)?;
+    if wl.discriminator != DISC_BORROWER_WL {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    if wl.is_whitelisted != 1 {
+        return Err(LendingError::NotWhitelisted.into());
+    }
+
     // Verify vault matches
     if market.vault != *vault_account.address().as_ref() {
         return Err(LendingError::InvalidVault.into());
@@ -139,7 +167,15 @@ pub fn process(program_id: &Address, accounts: &[AccountView], _data: &[u8]) -> 
         return Err(LendingError::InvalidMint.into());
     }
 
-    let excess_amount = vault_token.amount();
+    let vault_balance = vault_token.amount();
+    // COAL-H01: Subtract the exact unpaid haircut reserve.
+    //
+    // Unlike `re_settle`, borrower sweep logic should treat
+    // `haircut_accumulator` as unavailable balance. Those tokens may already be
+    // earmarked for prior withdrawers whose claims will be released later as SF
+    // improves.
+    let haircut_reserved = market.haircut_accumulator();
+    let excess_amount = vault_balance.saturating_sub(haircut_reserved);
     if excess_amount == 0 {
         return Err(LendingError::NoExcessToWithdraw.into());
     }

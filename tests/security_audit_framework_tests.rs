@@ -506,11 +506,7 @@ impl SimulatedProtocol {
         accrue_interest(&mut self.market, &self.config, self.current_timestamp)
             .map_err(|e| format!("Accrue failed: {:?}", e))?;
 
-        let fees_reserved = std::cmp::min(self.vault_balance, self.market.accrued_protocol_fees());
-        let borrowable = self
-            .vault_balance
-            .checked_sub(fees_reserved)
-            .ok_or("MathOverflow")?;
+        let borrowable = self.vault_balance;
 
         if amount > borrowable {
             return Err("BorrowAmountTooHigh".to_string());
@@ -586,13 +582,6 @@ impl SimulatedProtocol {
         // Compute settlement factor if not set
         if self.market.settlement_factor_wad() == 0 {
             let vault_balance_u128 = u128::from(self.vault_balance);
-            let fees_reserved = {
-                let fees = u128::from(self.market.accrued_protocol_fees());
-                std::cmp::min(vault_balance_u128, fees)
-            };
-            let available = vault_balance_u128
-                .checked_sub(fees_reserved)
-                .ok_or("MathOverflow")?;
 
             let total_normalized = self
                 .market
@@ -604,7 +593,7 @@ impl SimulatedProtocol {
             let settlement_factor = if total_normalized == 0 {
                 WAD
             } else {
-                let raw = available
+                let raw = vault_balance_u128
                     .checked_mul(WAD)
                     .ok_or("MathOverflow")?
                     .checked_div(total_normalized)
@@ -682,7 +671,20 @@ impl SimulatedProtocol {
             return Err("NoFeesToCollect".to_string());
         }
 
-        let withdrawable = std::cmp::min(accrued, self.vault_balance);
+        let mut withdrawable = std::cmp::min(accrued, self.vault_balance);
+        // COAL-C01: cap fee withdrawal above lender claims when supply > 0
+        if self.market.scaled_total_supply() > 0 {
+            let sf = self.market.scale_factor();
+            let total_norm = self
+                .market
+                .scaled_total_supply()
+                .checked_mul(sf)
+                .ok_or("MathOverflow")?
+                / WAD;
+            let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
+            let safe_max = self.vault_balance.saturating_sub(lender_claims);
+            withdrawable = withdrawable.min(safe_max);
+        }
         if withdrawable == 0 {
             return Err("NoFeesToCollect".to_string());
         }
@@ -710,13 +712,6 @@ impl SimulatedProtocol {
             .map_err(|e| format!("Accrue failed: {:?}", e))?;
 
         let vault_balance_u128 = u128::from(self.vault_balance);
-        let fees_reserved = {
-            let fees = u128::from(self.market.accrued_protocol_fees());
-            std::cmp::min(vault_balance_u128, fees)
-        };
-        let available = vault_balance_u128
-            .checked_sub(fees_reserved)
-            .ok_or("MathOverflow")?;
 
         let total_normalized = self
             .market
@@ -728,7 +723,7 @@ impl SimulatedProtocol {
         let new_factor = if total_normalized == 0 {
             WAD
         } else {
-            let raw = available
+            let raw = vault_balance_u128
                 .checked_mul(WAD)
                 .ok_or("MathOverflow")?
                 .checked_div(total_normalized)
@@ -1544,7 +1539,7 @@ fn oracle_scale_factor_after_step(
 
 fn oracle_fee_delta_normalized(
     scaled_total_supply: u128,
-    new_scale_factor: u128,
+    scale_factor_before: u128,
     annual_interest_bps: u16,
     last_accrual_timestamp: i64,
     maturity_timestamp: i64,
@@ -1566,22 +1561,25 @@ fn oracle_fee_delta_normalized(
     let fee_delta_wad = interest_delta_wad
         .checked_mul(u128::from(fee_rate_bps))?
         .checked_div(BPS)?;
+    // Use pre-accrual scale_factor_before (matches on-chain Finding 10 fix)
     let fee_normalized = scaled_total_supply
-        .checked_mul(new_scale_factor)?
+        .checked_mul(scale_factor_before)?
         .checked_div(WAD)?
         .checked_mul(fee_delta_wad)?
         .checked_div(WAD)?;
     u64::try_from(fee_normalized).ok()
 }
 
-fn oracle_settlement_factor(total_normalized: u128, vault_balance: u64, accrued_fees: u64) -> u128 {
+fn oracle_settlement_factor(
+    total_normalized: u128,
+    vault_balance: u64,
+    _accrued_fees: u64,
+) -> u128 {
     if total_normalized == 0 {
         return WAD;
     }
     let vault_u128 = u128::from(vault_balance);
-    let fees_reserved = vault_u128.min(u128::from(accrued_fees));
-    let available = vault_u128.saturating_sub(fees_reserved);
-    let raw = available * WAD / total_normalized;
+    let raw = vault_u128 * WAD / total_normalized;
     raw.min(WAD).max(1)
 }
 
@@ -1630,22 +1628,39 @@ proptest! {
                             );
                         }
                         Operation::CollectFees => {
-                            let expected = std::cmp::min(
-                                before.accrued_protocol_fees,
+                            // COAL-C01: do_collect_fees accrues first, then caps.
+                            // Use post-accrual values: after.scale_factor (unchanged
+                            // by collection), post_accrual_fees = after.fees + vault_decrease.
+                            let post_accrual_fees = after.accrued_protocol_fees + vault_decrease;
+                            let mut expected = std::cmp::min(
+                                post_accrual_fees,
                                 before.vault_balance,
                             );
+                            if after.scaled_total_supply > 0 {
+                                let sf = after.scale_factor;
+                                let total_norm = after.scaled_total_supply
+                                    .checked_mul(sf).unwrap()
+                                    / WAD;
+                                let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
+                                let safe_max = before.vault_balance.saturating_sub(lender_claims);
+                                expected = expected.min(safe_max);
+                            }
                             prop_assert_eq!(
                                 vault_decrease,
                                 expected,
-                                "collect_fees must reduce vault by min(accrued, vault)"
+                                "collect_fees must reduce vault by capped withdrawable"
                             );
-                            prop_assert_eq!(
-                                before
-                                    .accrued_protocol_fees
-                                    .saturating_sub(after.accrued_protocol_fees),
-                                expected,
-                                "fee counter decrement must equal collected amount"
-                            );
+                            // Verify vault still covers lender claims after collection
+                            if after.scaled_total_supply > 0 {
+                                let total_norm = after.scaled_total_supply
+                                    .checked_mul(after.scale_factor).unwrap()
+                                    / WAD;
+                                let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
+                                prop_assert!(
+                                    after.vault_balance >= lender_claims,
+                                    "vault must still cover lender claims after fee collection"
+                                );
+                            }
                         }
                         Operation::Deposit { .. } | Operation::Repay { .. } => {
                             prop_assert_eq!(
@@ -1668,7 +1683,7 @@ proptest! {
                             .expect("oracle scale overflow");
                             let expected_fee_delta = oracle_fee_delta_normalized(
                                 before.scaled_total_supply,
-                                expected_sf,
+                                before.scale_factor,
                                 before.annual_interest_bps,
                                 before.last_accrual_timestamp,
                                 before.maturity_timestamp,
@@ -1833,7 +1848,7 @@ proptest! {
                         .expect("oracle scale overflow");
                         let expected_fee_delta = oracle_fee_delta_normalized(
                             before.scaled_total_supply,
-                            expected_sf,
+                            before.scale_factor,
                             before.annual_interest_bps,
                             before.last_accrual_timestamp,
                             before.maturity_timestamp,
@@ -2068,12 +2083,9 @@ proptest! {
         prop_assert!(accrue.is_ok(), "maturity accrual should succeed");
 
         let before_all_withdrawals = protocol.snapshot();
-        let available_for_lenders = before_all_withdrawals
-            .vault_balance
-            .saturating_sub(std::cmp::min(
-                before_all_withdrawals.vault_balance,
-                before_all_withdrawals.accrued_protocol_fees,
-            ));
+        // COAL-C01: fees are no longer reserved from the settlement factor,
+        // so the full vault backs lender withdrawals.
+        let available_for_lenders = before_all_withdrawals.vault_balance;
 
         let before_a = protocol.snapshot();
         let wd_a = protocol.execute(&Operation::Withdraw {
@@ -2276,7 +2288,7 @@ proptest! {
                             .expect("oracle scale overflow");
                             let expected_fee_delta = oracle_fee_delta_normalized(
                                 before.scaled_total_supply,
-                                expected_sf,
+                                before.scale_factor,
                                 before.annual_interest_bps,
                                 before.last_accrual_timestamp,
                                 before.maturity_timestamp,
@@ -2682,7 +2694,7 @@ proptest! {
         .expect("oracle scale overflow");
         let expected_fee_delta = oracle_fee_delta_normalized(
             before_accrue.scaled_total_supply,
-            expected_sf,
+            before_accrue.scale_factor,
             interest_bps,
             before_accrue.last_accrual_timestamp,
             before_accrue.maturity_timestamp,
@@ -2702,10 +2714,21 @@ proptest! {
         let fees_collected_before = protocol.total_fees_collected;
         let total_fee_ledger_before = u128::from(before_collect.accrued_protocol_fees)
             + u128::from(fees_collected_before);
-        let expected_taken = std::cmp::min(
+        let mut expected_taken = std::cmp::min(
             before_collect.accrued_protocol_fees,
             before_collect.vault_balance,
         );
+        // COAL-C01: cap fee withdrawal above lender claims when supply > 0.
+        // do_collect_fees accrues first (no-op here since timestamp unchanged),
+        // then applies cap with current scale_factor.
+        if before_collect.scaled_total_supply > 0 {
+            let total_norm = before_collect.scaled_total_supply
+                .checked_mul(before_collect.scale_factor).unwrap()
+                / WAD;
+            let lender_claims = u64::try_from(total_norm).unwrap_or(u64::MAX);
+            let safe_max = before_collect.vault_balance.saturating_sub(lender_claims);
+            expected_taken = expected_taken.min(safe_max);
+        }
         let collect = protocol.execute(&Operation::CollectFees);
         match collect {
             Ok(()) => {
@@ -3278,7 +3301,7 @@ proptest! {
                 .expect("oracle scale overflow");
         let expected_fees = oracle_fee_delta_normalized(
             scaled_supply,
-            expected_sf,
+            WAD,
             interest_bps,
             start_ts,
             maturity,
@@ -3349,7 +3372,7 @@ proptest! {
             .expect("oracle scale overflow");
             let expected_fee_delta = oracle_fee_delta_normalized(
                 scaled_supply,
-                expected_sf,
+                prev_scale,
                 interest_bps,
                 prev_last_ts,
                 maturity,
@@ -3539,7 +3562,7 @@ proptest! {
         .expect("oracle scale overflow");
         let expected_fee_delta_pre = oracle_fee_delta_normalized(
             before_pre_maturity_accrue.scaled_total_supply,
-            expected_sf_pre,
+            before_pre_maturity_accrue.scale_factor,
             interest_bps,
             before_pre_maturity_accrue.last_accrual_timestamp,
             maturity,
@@ -3585,7 +3608,7 @@ proptest! {
         .expect("oracle scale overflow");
         let expected_fee_delta_maturity = oracle_fee_delta_normalized(
             before_maturity_accrue.scaled_total_supply,
-            expected_sf_maturity,
+            before_maturity_accrue.scale_factor,
             interest_bps,
             before_maturity_accrue.last_accrual_timestamp,
             maturity,
